@@ -24,6 +24,8 @@ Item {
   property bool isActive: false
   property bool showBadges: true
   property int radius: 0
+  property int animationDuration: 220
+  property int animationEasing: Easing.OutCubic
   // Resolves a Hyprland address to the Wayland toplevel to capture, and a
   // window class to an icon URL. Both are supplied by Omaview.qml.
   property var toplevelFor: null
@@ -38,8 +40,8 @@ Item {
   readonly property real wallH: monH * s
   readonly property real fadeW: Style.space(90)
   readonly property real originX: clipToMonitor ? 0 : (width - wallW) / 2
-  // The parent clips the previous/next workspace to a narrow peek. Capture
-  // only windows intersecting that peek or the main overview viewport.
+  // The parent clips the workspace stack to the overview viewport. Capture
+  // only windows intersecting its visible area, including during a slide.
   readonly property real captureTop: Math.max(0, -y)
   readonly property real captureBottom: Math.min(height, parent ? parent.height - y : height)
 
@@ -168,6 +170,7 @@ Item {
         required property bool focused
         readonly property var toplevel: view.toplevelFor ? view.toplevelFor(address) : null
         readonly property bool previewActive: view.live && view.visible
+          && view.captureBottom > view.captureTop
           && x + width > 0 && x < view.width
           && y + height > view.captureTop && y < view.captureBottom
         readonly property bool hasPreview: capture.hasContent
@@ -178,10 +181,10 @@ Item {
         height: Math.max(4, ch * view.s)
         z: floating ? 2 : (focused ? 1 : 0)
 
-        Behavior on x { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
-        Behavior on y { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
-        Behavior on width { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
-        Behavior on height { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
+        Behavior on x { NumberAnimation { duration: view.animationDuration; easing.type: view.animationEasing } }
+        Behavior on y { NumberAnimation { duration: view.animationDuration; easing.type: view.animationEasing } }
+        Behavior on width { NumberAnimation { duration: view.animationDuration; easing.type: view.animationEasing } }
+        Behavior on height { NumberAnimation { duration: view.animationDuration; easing.type: view.animationEasing } }
 
         Rectangle {
           anchors.fill: parent

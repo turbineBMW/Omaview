@@ -63,6 +63,7 @@ Item {
     root.hoveredDockKey = ""
     root.setDockHints(false)
     root.clearDockDrag()
+    workspaceAnimation.stop()
     root.stateLoaded = false
     root.nativeReady = false
     root.nativeError = ""
@@ -82,6 +83,7 @@ Item {
     root.opened = false
     root.setDockHints(false)
     root.clearDockDrag()
+    workspaceAnimation.stop()
     refreshDebounce.stop()
   }
 
@@ -109,15 +111,16 @@ Item {
       workspace: root.activeWsId, focusedAddress: root.focusedAddress,
       filter: root.filterText, clients: root.clientsByWs, previews: root.previewStatus(), error: root.nativeError,
       dockHintsVisible: root.dockHintsVisible, dockShortcutKeys: root.dockShortcutKeys, dock: root.dockItems,
-      dockSlots: root.dockSlotGeometry(), dockDragging: root.dockDragging, dockDropValid: root.dockDropValid })
+      dockSlots: root.dockSlotGeometry(), dockDragging: root.dockDragging, dockDropValid: root.dockDropValid,
+      workspaceMotion: { running: workspaceAnimation.running, position: root.workspacePosition,
+        duration: root.previewDuration, views: root.workspaceStackStatus() } })
   }
 
   function previewStatus() {
-    if (root.scrollingMode)
-      return previousView.previewStatus().concat(mainView.previewStatus(), nextView.previewStatus())
     var result = []
-    for (var i = 0; i < workspacePreviews.count; i++) {
-      var workspace = workspacePreviews.itemAt(i)
+    var previews = root.scrollingMode ? scrollingPreviews : workspacePreviews
+    for (var i = 0; i < previews.count; i++) {
+      var workspace = previews.itemAt(i)
       if (workspace) result = result.concat(workspace.previewStatus())
     }
     return result
@@ -145,7 +148,6 @@ Item {
     for (var i = 0; i < workspaces.length; i++) if (workspaces[i].id === activeWsId) return i
     return -1
   }
-  readonly property var prevWs: activeWsIndex > 0 ? workspaces[activeWsIndex - 1] : null
   // niri always keeps an empty workspace at the bottom; mirror that.
   property int nextFreeWsId: 2
   readonly property var nextWs: activeWsIndex >= 0 && activeWsIndex < workspaces.length - 1
@@ -156,6 +158,92 @@ Item {
   property string focusedAddress: ""
   property string lastState: ""
   property bool modePending: false
+
+  // Animation changes only the presentation. Workspace selection and window
+  // contents always come from the latest compositor observation.
+  readonly property int previewDuration: 220
+  readonly property int previewEasing: Easing.OutCubic
+  property real workspacePosition: 0
+  property int workspaceTargetId: 0
+  property string workspaceMonitor: ""
+  ListModel { id: scrollingWorkspaces }
+  NumberAnimation {
+    id: workspaceAnimation
+    target: root
+    property: "workspacePosition"
+    duration: root.previewDuration
+    easing.type: root.previewEasing
+    onFinished: root.syncWorkspaceStack(false)
+  }
+
+  function workspaceStackStatus() {
+    var result = []
+    for (var i = 0; i < scrollingPreviews.count; i++) {
+      var view = scrollingPreviews.itemAt(i)
+      if (view) result.push({ id: view.wsId, y: view.y, h: view.height, active: view.isActive })
+    }
+    return result
+  }
+
+  function syncWorkspaceStack(animate) {
+    if (!root.scrollingMode) {
+      workspaceAnimation.stop()
+      scrollingWorkspaces.clear()
+      root.workspaceTargetId = 0
+      return
+    }
+
+    var rows = root.workspaces.slice()
+    if (root.nextWs && !rows.some(function(ws) { return ws.id === root.nextWs.id })) rows.push(root.nextWs)
+    var oldIds = []
+    var canAnimate = animate && root.workspaceMonitor === root.monitor.name && root.workspaceTargetId !== 0
+    var selectionChanged = root.workspaceTargetId !== root.activeWsId
+    for (var i = 0; i < scrollingWorkspaces.count; i++) {
+      var old = scrollingWorkspaces.get(i)
+      oldIds.push(old.workspaceId)
+      // Hyprland may remove an empty workspace as soon as we leave it. Keep
+      // its preview until it has slid out, then prune it on animation finish.
+      if (canAnimate && (selectionChanged || workspaceAnimation.running)
+          && !rows.some(function(ws) { return ws.id === old.workspaceId }))
+        rows.push({ id: old.workspaceId, name: old.workspaceName })
+    }
+    rows.sort(function(a, b) { return a.id - b.id })
+    var ids = rows.map(function(ws) { return ws.id })
+    var target = ids.indexOf(root.activeWsId)
+    if (target < 0) return
+    var structureChanged = JSON.stringify(ids) !== JSON.stringify(oldIds)
+    var oldPosition = root.workspacePosition
+    var anchor = oldIds.indexOf(root.workspaceTargetId)
+    var newAnchor = ids.indexOf(root.workspaceTargetId)
+    var reposition = !canAnimate || selectionChanged || structureChanged
+    if (reposition) workspaceAnimation.stop()
+
+    // Preserve delegates by workspace ID, just as WorkspaceView preserves
+    // window captures by address. A focus change must not rebuild either.
+    for (var row = 0; row < rows.length; row++) {
+      var at = -1
+      for (var j = row; j < scrollingWorkspaces.count; j++)
+        if (scrollingWorkspaces.get(j).workspaceId === rows[row].id) { at = j; break }
+      if (at < 0) scrollingWorkspaces.insert(row, { workspaceId: rows[row].id, workspaceName: rows[row].name })
+      else {
+        if (at !== row) scrollingWorkspaces.move(at, row, 1)
+        scrollingWorkspaces.setProperty(row, "workspaceName", rows[row].name)
+      }
+    }
+    if (scrollingWorkspaces.count > rows.length)
+      scrollingWorkspaces.remove(rows.length, scrollingWorkspaces.count - rows.length)
+
+    root.workspaceTargetId = root.activeWsId
+    root.workspaceMonitor = root.monitor.name
+    if (!reposition) return // Geometry updates must not restart the transition.
+    root.workspacePosition = canAnimate && anchor >= 0 && newAnchor >= 0
+      ? oldPosition + newAnchor - anchor : target
+    if (root.workspacePosition !== target) {
+      workspaceAnimation.from = root.workspacePosition
+      workspaceAnimation.to = target
+      workspaceAnimation.start()
+    } else if (canAnimate) root.syncWorkspaceStack(false)
+  }
 
   function focusDirection(dir) {
     if (!root.opened || ["l", "r", "u", "d"].indexOf(dir) < 0) return
@@ -258,6 +346,7 @@ Item {
     for (var s = 0; s < screens.length; s++) {
       if (screens[s].name === mon.name) { panel.screen = screens[s]; break }
     }
+    root.syncWorkspaceStack(root.stateLoaded && panel.visible)
     root.stateLoaded = true
   }
 
@@ -1108,6 +1197,8 @@ Item {
               radius: Style.space(6)
               toplevelFor: root.toplevelFor
               live: panel.visible
+              animationDuration: root.previewDuration
+              animationEasing: root.previewEasing
               iconFor: root.iconForClass
               onWorkspaceActivated: function(id) { root.focusWorkspace(id, true) }
               onWindowActivated: function(address) { root.focusWindow(address, true) }
@@ -1117,75 +1208,38 @@ Item {
           }
         }
 
-        // Scrolling layout: a sliver of the workspace above...
-        WorkspaceView {
-          id: previousView
-          visible: root.scrollingMode && root.prevWs !== null
-          width: parent.width
-          y: root.peek - height
-          wsId: root.prevWs ? root.prevWs.id : 0
-          wsName: root.prevWs ? root.prevWs.name : ""
-          clients: root.prevWs && root.scrollingMode ? root.clientsFor(root.prevWs.id) : []
-          monW: root.monitor.w
-          monH: root.monitor.h
-          s: panel.mainScale
-          wallpaper: root.wallpaper
-          showBadges: false
-          radius: root.radius
-          toplevelFor: root.toplevelFor
-          live: panel.visible
-          onWorkspaceActivated: function(id) { root.focusWorkspace(id, true) }
-          onWindowActivated: function(address) { root.focusWindow(address, true) }
-          onWindowAccepted: function(address) { root.focusWindow(address, false) }
-          onWindowCloseRequested: function(address) { root.closeWindow(address) }
-        }
-
-        // ...the current workspace, wallpaper centered, off-view windows as
-        // a filmstrip on either side...
-        WorkspaceView {
-          id: mainView
-          visible: root.scrollingMode
-          width: parent.width
-          y: root.peek + root.stackGap
-          wsId: root.activeWsId
-          wsName: String(root.activeWsId)
-          clients: root.scrollingMode ? root.clientsFor(root.activeWsId) : []
-          monW: root.monitor.w
-          monH: root.monitor.h
-          s: panel.mainScale
-          wallpaper: root.wallpaper
-          isActive: true
-          radius: root.radius
-          toplevelFor: root.toplevelFor
-          live: panel.visible
-          iconFor: root.iconForClass
-          onWorkspaceActivated: function(id) { root.focusWorkspace(id, true) }
-          onWindowActivated: function(address) { root.focusWindow(address, true) }
-          onWindowAccepted: function(address) { root.focusWindow(address, false) }
-          onWindowCloseRequested: function(address) { root.closeWindow(address) }
-        }
-
-        // ...and a sliver of the one below.
-        WorkspaceView {
-          id: nextView
-          visible: root.scrollingMode && root.nextWs !== null
-          width: parent.width
-          y: mainView.y + mainView.height + root.stackGap
-          wsId: root.nextWs ? root.nextWs.id : 0
-          wsName: root.nextWs ? root.nextWs.name : ""
-          clients: root.scrollingMode && root.nextWs ? root.clientsFor(root.nextWs.id) : []
-          monW: root.monitor.w
-          monH: root.monitor.h
-          s: panel.mainScale
-          wallpaper: root.wallpaper
-          showBadges: false
-          radius: root.radius
-          toplevelFor: root.toplevelFor
-          live: panel.visible
-          onWorkspaceActivated: function(id) { root.focusWorkspace(id, true) }
-          onWindowActivated: function(address) { root.focusWindow(address, true) }
-          onWindowAccepted: function(address) { root.focusWindow(address, false) }
-          onWindowCloseRequested: function(address) { root.closeWindow(address) }
+        // Stable workspace previews slide through the viewport together.
+        // The adjacent workspaces naturally remain visible as narrow peeks.
+        Repeater {
+          id: scrollingPreviews
+          model: scrollingWorkspaces
+          delegate: WorkspaceView {
+            required property int index
+            required property int workspaceId
+            required property string workspaceName
+            visible: root.scrollingMode
+            width: parent.width
+            y: root.peek + root.stackGap + (index - root.workspacePosition) * (height + root.stackGap)
+            wsId: workspaceId
+            wsName: workspaceName
+            clients: root.clientsFor(workspaceId)
+            monW: root.monitor.w
+            monH: root.monitor.h
+            s: panel.mainScale
+            wallpaper: root.wallpaper
+            isActive: workspaceId === root.activeWsId
+            showBadges: isActive
+            radius: root.radius
+            toplevelFor: root.toplevelFor
+            live: panel.visible
+            animationDuration: root.previewDuration
+            animationEasing: root.previewEasing
+            iconFor: root.iconForClass
+            onWorkspaceActivated: function(id) { root.focusWorkspace(id, true) }
+            onWindowActivated: function(address) { root.focusWindow(address, true) }
+            onWindowAccepted: function(address) { root.focusWindow(address, false) }
+            onWindowCloseRequested: function(address) { root.closeWindow(address) }
+          }
         }
       }
 

@@ -42,7 +42,9 @@ open omaview on, and stays put while you move between workspaces inside it.
   outside the monitor sit off the wallpaper to the left and right; where they
   run past the edge of the screen they fade out. A sliver of the workspace
   above and below peeks in; the one below is an empty workspace when you are
-  on the last, as in niri.
+  on the last, as in niri. Switching workspaces slides this stack vertically
+  with the same 220 ms ease-out timing as window scrolling. Switching again
+  during a transition continues from the current position.
 - **Any other layout** — no large view: every workspace on the monitor sits in
   one horizontal strip, the focused one slightly larger. The strip shrinks to
   fit when there are many workspaces, and the app grid gets the freed space.
@@ -121,6 +123,8 @@ scrolling and dwindle layouts, actual preview pixels for offscreen windows,
 capture visibility, search after focus changes, geometry updates,
 workspace switching, close/reopen, Ctrl+letter dock focus/launch actions, and
 pointer-driven pin reordering, cancellation, and persistence across shell restarts.
+Workspace animation checks sample intermediate positions in both directions
+and reverse a transition while Hyprland's active workspace changes immediately.
 The launch test uses a temporary desktop entry and runs `gtk-launch` directly
 inside the test session, bypassing UWSM's host-systemd scope wrapper.
 It uses the machine's installed system

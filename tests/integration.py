@@ -222,8 +222,33 @@ try:
     wait_for(matches_geometry)
     print("PASS: native geometry updates without per-binding callbacks", flush=True)
 
+    settled_workspace_y = next(v for v in observed()["workspaceMotion"]["views"] if v["active"])["y"]
+
+    def collect_workspace_motion(workspace, direction):
+        frames = []
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            frame = observed()
+            motion = frame["workspaceMotion"]
+            if frame["workspace"] == workspace:
+                frames.append(motion)
+                if not motion["running"]:
+                    break
+            time.sleep(.01)
+        moving = [m for m in frames if m["running"]]
+        assert len(moving) >= 2, "Workspace transition must have intermediate frames"
+        assert not frames[-1]["running"], "Workspace transition must settle"
+        positions = [m["position"] for m in frames]
+        assert all((b - a) * direction >= 0 for a, b in zip(positions, positions[1:])), positions
+        assert abs(positions[-1] - positions[0]) > .01
+        assert all(m["duration"] == 220 for m in frames)
+        assert all({v["id"] for v in m["views"]} == {1, 2} for m in frames)
+        active = next(v for v in frames[-1]["views"] if v["active"])
+        assert active["id"] == workspace and active["y"] == settled_workspace_y
+        return frames
+
     run("wtype", "-M", "ctrl", "-k", "Down", "-m", "ctrl")
-    wait_for(lambda: observed()["workspace"] == 2)
+    downward = collect_workspace_motion(2, 1)
     assert compositor()["activewindow"] == {}
     for _ in range(3):
         run("wtype", "-M", "ctrl", "-k", "Down", "-m", "ctrl")
@@ -232,8 +257,40 @@ try:
     assert observed()["workspace"] == 2
     assert max(w["id"] for w in compositor()["workspaces"]) == 2
     run("wtype", "-M", "ctrl", "-k", "Up", "-m", "ctrl")
-    wait_for(lambda: observed()["workspace"] == 1)
+    upward = collect_workspace_motion(1, -1)
     print("PASS: native workspace navigation and a single trailing empty workspace", flush=True)
+    assert next(v for v in downward[0]["views"] if v["id"] == 1)["y"] > next(v for v in downward[-1]["views"] if v["id"] == 1)["y"]
+    assert next(v for v in upward[0]["views"] if v["id"] == 1)["y"] < next(v for v in upward[-1]["views"] if v["id"] == 1)["y"]
+    print("PASS: workspace previews slide both directions with intermediate frames and the shared 220 ms timing", flush=True)
+
+    # Reverse while moving. Hyprland switches immediately; presentation
+    # continues from its current position instead of jumping to either end.
+    ipc("stepWorkspace", "1")
+    wait_for(lambda: observed()["workspaceMotion"]["running"] and
+             .1 < observed()["workspaceMotion"]["position"] < .9)
+    ipc("stepWorkspace", "-1")
+    wait_for(lambda: observed()["workspace"] == 1)
+    reversing = observed()["workspaceMotion"]
+    assert reversing["running"] and 0 < reversing["position"] < 1
+    assert next(m for m in compositor()["monitors"] if m["focused"])["activeWorkspace"]["id"] == 1
+    wait_for(lambda: not observed()["workspaceMotion"]["running"])
+    assert observed()["workspaceMotion"]["position"] == 0
+    print("PASS: rapid workspace reversal stays continuous while compositor focus updates immediately", flush=True)
+
+    # A departing empty workspace may vanish from Hyprland's list before
+    # its slide finishes. Keep its view through the animation, then remove it.
+    ipc("stepWorkspace", "1")
+    wait_for(lambda: observed()["workspace"] == 2 and not observed()["workspaceMotion"]["running"])
+    run("hyprctl", "dispatch", 'hl.dsp.focus({workspace="3"})')
+    wait_for(lambda: observed()["workspace"] == 3)
+    departing = observed()["workspaceMotion"]
+    assert departing["running"] and any(v["id"] == 2 for v in departing["views"])
+    wait_for(lambda: not observed()["workspaceMotion"]["running"])
+    assert {v["id"] for v in observed()["workspaceMotion"]["views"]} == {1, 3}
+    run("hyprctl", "dispatch", 'hl.dsp.focus({workspace="1"})')
+    wait_for(lambda: observed()["workspace"] == 1 and not observed()["workspaceMotion"]["running"])
+    assert {v["id"] for v in observed()["workspaceMotion"]["views"]} == {1, 2}
+    print("PASS: destroyed empty workspaces slide out before their previews are removed", flush=True)
 
     run("hyprctl", "eval", 'hl.workspace_rule({workspace="1", layout="dwindle"})')
     wait_for(lambda: next(w for w in compositor()["workspaces"] if w["id"] == 1)["tiledLayout"] == "dwindle")
