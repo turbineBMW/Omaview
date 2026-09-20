@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "id": "turbinebmw.omaview",
+  "name": "Omaview",
+  "version": "1.1.1",
+  "author": "turbinebmw",
+  "description": "Live Hyprland workspace controls with an app grid, Omarchy menus, and a dock.",
+  "kinds": [
+    "menu"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "menu": "Omaview.qml"
+  }
+}
