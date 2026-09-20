@@ -268,6 +268,7 @@ Item {
     Rectangle {
       x: view.originX + Style.space(6)
       y: Style.space(6)
+      z: 3 // Above both focused (1) and floating (2) window previews.
       visible: view.showBadges
       width: Math.max(height, wsLabel.implicitWidth + Style.space(10))
       height: wsLabel.implicitHeight + Style.space(4)
