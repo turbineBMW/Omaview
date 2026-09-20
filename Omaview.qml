@@ -103,7 +103,18 @@ Item {
   function status(arg) {
     return JSON.stringify({ opened: root.opened, nativeReady: root.nativeReady,
       workspace: root.activeWsId, focusedAddress: root.focusedAddress,
-      filter: root.filterText, clients: root.clientsByWs, error: root.nativeError })
+      filter: root.filterText, clients: root.clientsByWs, previews: root.previewStatus(), error: root.nativeError })
+  }
+
+  function previewStatus() {
+    if (root.scrollingMode)
+      return previousView.previewStatus().concat(mainView.previewStatus(), nextView.previewStatus())
+    var result = []
+    for (var i = 0; i < workspacePreviews.count; i++) {
+      var workspace = workspacePreviews.itemAt(i)
+      if (workspace) result = result.concat(workspace.previewStatus())
+    }
+    return result
   }
 
   function refresh() {
@@ -929,6 +940,7 @@ Item {
           spacing: panel.stripGap
 
           Repeater {
+            id: workspacePreviews
             model: root.scrollingMode ? [] : root.workspaces
             delegate: WorkspaceView {
               required property var modelData
@@ -958,6 +970,7 @@ Item {
 
         // Scrolling layout: a sliver of the workspace above...
         WorkspaceView {
+          id: previousView
           visible: root.scrollingMode && root.prevWs !== null
           width: parent.width
           y: root.peek - height
@@ -1005,6 +1018,7 @@ Item {
 
         // ...and a sliver of the one below.
         WorkspaceView {
+          id: nextView
           visible: root.scrollingMode && root.nextWs !== null
           width: parent.width
           y: mainView.y + mainView.height + root.stackGap

@@ -9,15 +9,19 @@
 #include <hyprland/src/managers/SeatManager.hpp>
 #include <hyprland/src/managers/EventManager.hpp>
 #include <hyprland/src/debug/HyprCtl.hpp>
+#include <hyprland/src/managers/screenshare/ScreenshareManager.hpp>
+#include <hyprland/src/state/MonitorState.hpp>
 
 #include <hyprland/src/protocols/LayerShell.hpp>
 
 #include <chrono>
 #include <stdexcept>
+#include <unordered_map>
 
 namespace {
 constexpr auto NAMESPACE = "omarchy-omaview";
 std::vector<CHyprSignalListener> listeners;
+std::unordered_map<MONITORID, CHyprSignalListener> captureListeners;
 std::string lastGeometry;
 std::chrono::steady_clock::time_point lastCheck;
 
@@ -42,6 +46,44 @@ void routeKeyboard() {
     // This runs before Hyprland processes binds. A bind is still dispatched by
     // Hyprland against its real active window; unbound typing reaches QML.
     Desktop::focusState()->rawSurfaceFocus(layer->wlSurface()->resource());
+}
+
+void copyOverviewFrames(PHLMONITOR monitor) {
+    const auto layer = overview();
+    if (!layer || layer->m_monitor != monitor || g_pSessionLockManager->isSessionLocked())
+        return;
+    const auto surface = layer->m_layerSurface->m_surface.lock();
+    if (!surface)
+        return;
+
+    // Hyprland 0.56.2 skips window capture when the real window is outside
+    // its monitor. Its export renderer already supports those windows.
+    // Complete only Omaview's pending offscreen captures at the same output
+    // commit stage as the normal manager. copy() retains all permission,
+    // no-screen-share, buffer, lifetime and in-flight checks.
+    // These private SDK members require -fno-access-control; no hooks or
+    // changes to window geometry or the compositor's capture policy are used.
+    const auto pending = Screenshare::mgr()->m_pendingFrames;
+    for (const auto& frame : pending) {
+        if (!frame || !frame->m_shared || frame->done())
+            continue;
+        const auto session = frame->m_session;
+        if (!session || session->m_type != Screenshare::SHARE_WINDOW || session->monitor() != monitor || session->m_client != surface->client())
+            continue;
+        const auto window = session->m_window.lock();
+        if (!window || window->isHidden())
+            continue;
+        if (!window->geometricBox(Desktop::View::IGeometric::GEOMETRIC_CURRENT).intersection({monitor->m_position, monitor->m_size}).empty())
+            continue;
+        frame->copy();
+    }
+}
+
+void watchMonitor(PHLMONITOR monitor) {
+    captureListeners[monitor->m_id] = monitor->m_events.commit.listen([weak = PHLMONITORREF{monitor}]() {
+        if (const auto monitor = weak.lock())
+            copyOverviewFrames(monitor);
+    });
 }
 
 void geometryChanged() {
@@ -99,12 +141,19 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
         [](PHLWINDOW, Desktop::eFocusReason) { routeKeyboard(); }));
     listeners.emplace_back(Event::bus()->m_events.render.pre.listen(
         [](PHLMONITOR) { geometryChanged(); }));
+    for (const auto& monitor : State::monitorState()->monitors())
+        watchMonitor(monitor);
+    listeners.emplace_back(Event::bus()->m_events.monitor.added.listen(
+        [](PHLMONITOR monitor) { watchMonitor(monitor); }));
+    listeners.emplace_back(Event::bus()->m_events.monitor.removed.listen(
+        [](PHLMONITOR monitor) { captureListeners.erase(monitor->m_id); }));
 
-    return {"omaview", "Native focus and geometry events for the Omaview shell", "turbinebmw", "1.1.0"};
+    return {"omaview", "Native focus, geometry and overview captures for the Omaview shell", "turbinebmw", "1.1.2"};
 }
 
 APICALL EXPORT void PLUGIN_EXIT() {
     listeners.clear();
+    captureListeners.clear();
     lastGeometry.clear();
     if (g_pEventManager)
         g_pEventManager->postEvent({"omaview", "unloaded"});

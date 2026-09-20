@@ -16,7 +16,7 @@ import time
 plugin = Path(__file__).resolve().parents[1]
 
 if os.environ.get("OMAVIEW_TEST_ISOLATED") != "1":
-    for command in ("bwrap", "dbus-run-session", "git", "Hyprland", "qs", "foot", "wtype"):
+    for command in ("bwrap", "dbus-run-session", "git", "Hyprland", "qs", "foot", "wtype", "grim"):
         if not shutil.which(command):
             raise SystemExit(f"Test prerequisite missing: {command}")
     with tempfile.TemporaryDirectory(prefix="omaview-clean-install-") as directory:
@@ -111,8 +111,10 @@ try:
     time.sleep(.5)
     assert run("hyprctl", "eval", "assert(not pcall(require, 'hypr.layout_aware')); assert(not pcall(require, 'hypr.dynamic_workspaces'))") == "ok"
     assert json.loads(run("hyprctl", "-j", "plugin", "list")) == []
-    for name in ("a", "b", "c"):
+    colors = dict(zip("abcdef", ("cc2244", "22aa55", "2266cc", "cc9922", "9933bb", "22aabb")))
+    for name, color in colors.items():
         processes.append(subprocess.Popen(["foot", "-a", "omaview-test-" + name,
+            "-o", "colors-dark.background=" + color,
             "-T", "Omaview test " + name, "sleep", "600"], env=env,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
         time.sleep(.2)
@@ -136,6 +138,35 @@ try:
     assert len(list((Path.home() / ".cache/omaview").rglob("omaview.so"))) == 1
     wait_for(matches_focus)
     print("PASS: actual plugin install, enable, keybind, and automatic build with an empty home/cache", flush=True)
+
+    original = compositor()
+    mon = next(m for m in original["monitors"] if m["focused"])
+    offscreen = {c["address"] for c in original["clients"]
+                 if c["at"][0] + c["size"][0] <= mon["x"] or c["at"][0] >= mon["x"] + mon["width"]}
+    visible_offscreen = {p["address"] for p in observed()["previews"] if p["capturing"]} & offscreen
+    assert visible_offscreen, "Regression needs a window outside the desktop but inside the overview"
+    wait_for(lambda: all(p["hasContent"] for p in observed()["previews"] if p["capturing"]))
+    assert any(not p["capturing"] for p in observed()["previews"]), "Test should also include clipped previews"
+    assert all(not p["hasContent"] for p in observed()["previews"] if not p["capturing"])
+    current = compositor()
+    assert current["activewindow"]["address"] == original["activewindow"]["address"]
+    assert {c["address"]: c["at"] for c in current["clients"]} == {c["address"]: c["at"] for c in original["clients"]}
+
+    # Verify pixels, not just successful frame delivery: the offscreen
+    # terminal's solid background must appear in the overview screenshot.
+    ppm = subprocess.check_output(["grim", "-t", "ppm", "-"], env=env)
+    magic, size, maximum, pixels = ppm.split(b"\n", 3)
+    assert magic == b"P6" and maximum == b"255"
+    width, height = map(int, size.split())
+    previews = [p for p in observed()["previews"] if p["address"] in visible_offscreen]
+    sample = max(previews, key=lambda p: min(width - 100, p["x"] + p["w"]) - max(100, p["x"]))
+    x = int((max(100, sample["x"]) + min(width - 100, sample["x"] + sample["w"])) / 2)
+    y = int(sample["y"] + sample["h"] * .35)
+    client = next(c for c in current["clients"] if c["address"] == sample["address"])
+    expected = bytes.fromhex(colors[client["class"].removeprefix("omaview-test-")])
+    actual = pixels[(y * width + x) * 3:(y * width + x) * 3 + 3]
+    assert len(actual) == 3 and all(abs(a - b) < 12 for a, b in zip(actual, expected)), (actual.hex(), expected.hex())
+    print("PASS: offscreen desktop windows have visible preview pixels without moving focus or layout; clipped captures stop", flush=True)
 
     for direction in ("l", "l", "r", "r"):
         before = compositor()["activewindow"]["address"]
@@ -196,6 +227,7 @@ try:
     time.sleep(.2)
     assert compositor()["activewindow"]["address"] == selected
     assert not observed()["opened"]
+    assert all(not p["capturing"] for p in observed()["previews"])
     binary = next((Path.home() / ".cache/omaview").rglob("omaview.so"))
     mtime = binary.stat().st_mtime_ns
     shell("summon", "turbinebmw.omaview", "{}")

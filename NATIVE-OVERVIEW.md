@@ -91,6 +91,31 @@ and [the plugin API and ABI check](https://github.com/hyprwm/Hyprland/blob/v0.56
 The QML change also preserves workspace delegates and dock items across
 geometry-only updates and stops live captures when the panel is closed.
 
+## Previews beyond the desktop viewport
+
+Hyprland 0.56.2's
+[`CScreenshareManager::onOutputCommit`](https://github.com/hyprwm/Hyprland/blob/v0.56.2/src/managers/screenshare/ScreenshareManager.cpp)
+skips a window frame when its real geometry does not intersect its monitor.
+A scrolling column can satisfy that condition while its scaled preview is
+visible in Omaview. Its capture then stays empty until the desktop scrolls
+closer to that column.
+
+The companion listens for output commits and completes those pending frames
+using Hyprland's existing `CScreenshareFrame::copy()`. It restricts this to
+the mapped overview's Wayland client and monitor, checks window lifetime and
+visibility, and stops during session lock. The normal capture implementation
+still checks permissions, `no_screen_share`, buffers and copies in flight.
+No window is focused or moved to obtain its preview.
+
+The pending-frame queue and copy method are private SDK interfaces. The build
+uses `-fno-access-control` to access them under the same strict ABI check as
+the rest of the companion. It does not replace Hyprland functions. Monitor
+listeners are removed on disconnect and plugin unload.
+
+QML starts captures only for window rectangles intersecting the overview's
+visible area, including the clipped peeks above and below. Fully clipped
+previews release their capture source; closing releases all preview sources.
+
 ## Distribution
 
 The repository contains the complete Omarchy plugin, including native source
@@ -148,7 +173,11 @@ It checks repeated native focus changes, immediate search input after focus,
 ordinary compositor bindings, Ctrl navigation through QML, resize geometry,
 workspace switching including a single trailing empty workspace, scrolling and
 dwindle layouts, and unchanged active focus after closing. Reopening reuses the
-compiled companion. It checks actual compositor addresses and coordinates
+compiled companion. A regression test creates six colored terminal windows,
+including columns outside the desktop that are visible in the overview. It
+checks frame availability and screenshot pixels before changing focus or
+layout, and confirms fully clipped previews are not capturing. This test failed
+against the previous native companion. It checks actual compositor addresses and coordinates
 against the overview's observations. The system packages are those installed
 on the host; this is not a fresh OS installation test.
 `resolve_binds_by_sym` is enabled only in the temporary compositor because

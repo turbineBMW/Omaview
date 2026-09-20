@@ -67,6 +67,9 @@ The preview uses Hyprland's actual reported positions and focused address.
 There is no independent window selection, guessed neighbor, simulated scroll
 offset, focus replay on close, or callback required in individual bindings.
 Geometry notifications come from the native companion; the shell does not poll.
+Every window intersecting the overview viewport gets a preview, including
+scrolling columns outside the desktop monitor's bounds. Fully clipped previews
+and previews in a closed overview stop capturing.
 
 ## Native companion
 
@@ -92,6 +95,16 @@ in a single compositor turn. `omaview>>geometry` events indicate changed layout
 coordinates. The QML view reads those observations and sends normal dispatches.
 Window capture stops while the overview is closed.
 
+Hyprland 0.56.2 normally skips capture frames for windows entirely outside their
+desktop monitor. The companion completes the overview's pending frames for
+those windows through Hyprland's existing capture renderer. Capture permissions
+and `no_screen_share` rules still apply. This uses internal capture interfaces
+as well as event listeners, so matching compositor headers remain required.
+
+After an update that changes the native companion, restart the Hyprland session
+to load the new version. The loader reports an old loaded companion instead of
+silently continuing with it.
+
 For details, alternatives, source references and limitations, see
 [NATIVE-OVERVIEW.md](NATIVE-OVERVIEW.md).
 
@@ -104,11 +117,12 @@ python3 ~/.config/omarchy/plugins/turbinebmw.omaview/tests/integration.py
 The test mounts an empty temporary home using Bubblewrap, starts a separate
 compositor and the real Omarchy shell, and runs the actual plugin installer.
 It verifies the first-open native build from an empty cache, navigation in
-scrolling and dwindle layouts, search after focus changes, geometry updates,
+scrolling and dwindle layouts, actual preview pixels for offscreen windows,
+capture visibility, search after focus changes, geometry updates,
 workspace switching, and close/reopen. It uses the machine's installed system
 packages, so this tests independence from personal configuration rather than a
 fresh OS installation. Test-only tools are `bwrap`, `dbus-run-session`, `git`,
-`python3`, `foot`, and `wtype`.
+`python3`, `foot`, `wtype`, and `grim`.
 
 ## Middle: apps and Omarchy menus
 

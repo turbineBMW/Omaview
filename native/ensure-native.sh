@@ -17,10 +17,14 @@ require_commands() {
 # Runs on open. Dependencies are checked, never silently installed. On a
 # standard Omarchy installation they are already provided by system packages.
 require_commands hyprctl jq
-plugins=$(hyprctl -j plugin list) || fail "Cannot contact the running Hyprland instance."
-if jq -e 'any(.[]; .name == "omaview")' <<< "$plugins" >/dev/null; then
-  exit 0
-fi
+native_loaded() {
+  local plugins version
+  plugins=$(hyprctl -j plugin list) || fail "Cannot contact the running Hyprland instance."
+  version=$(jq -r '.[] | select(.name == "omaview") | .version' <<< "$plugins")
+  [[ -n $version ]] || return 1
+  [[ $version == 1.1.2 ]] || fail "An older native companion is still loaded. Restart your Hyprland session to finish updating Omaview."
+}
+if native_loaded; then exit 0; fi
 
 require_commands dirname sha256sum cut mkdir flock mv rm
 source_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -35,9 +39,7 @@ exec 9>"$cache_dir/build.lock"
 flock 9
 
 # Another opener may have loaded it while this one waited for the build.
-if hyprctl -j plugin list | jq -e 'any(.[]; .name == "omaview")' >/dev/null; then
-  exit 0
-fi
+if native_loaded; then exit 0; fi
 
 binary="$cache_dir/omaview.so"
 if [[ ! -s $binary ]]; then
@@ -52,7 +54,7 @@ if [[ ! -s $binary ]]; then
   read -r -a compiler_flags <<< "$flags"
   temporary="$cache_dir/omaview.$$.so"
   trap 'rm -f -- "$temporary"' EXIT
-  g++ -shared -fPIC -fno-gnu-unique -std=c++23 -O2 -Wall -Wextra \
+  g++ -shared -fPIC -fno-gnu-unique -fno-access-control -std=c++23 -O2 -Wall -Wextra \
     "${compiler_flags[@]}" "$source_dir/omaview.cpp" -o "$temporary" \
     || fail "Native build failed. The installed Hyprland headers/compiler must support this companion (tested with 0.56.2)."
   mv -- "$temporary" "$binary"

@@ -38,6 +38,23 @@ Item {
   readonly property real wallH: monH * s
   readonly property real fadeW: Style.space(90)
   readonly property real originX: clipToMonitor ? 0 : (width - wallW) / 2
+  // The parent clips the previous/next workspace to a narrow peek. Capture
+  // only windows intersecting that peek or the main overview viewport.
+  readonly property real captureTop: Math.max(0, -y)
+  readonly property real captureBottom: Math.min(height, parent ? parent.height - y : height)
+
+  function previewStatus() {
+    var result = []
+    for (var i = 0; i < windowPreviews.count; i++) {
+      var preview = windowPreviews.itemAt(i)
+      if (!preview) continue
+      var position = preview.mapToItem(null, 0, 0)
+      result.push({ address: preview.address, capturing: preview.previewActive,
+                    hasContent: preview.hasPreview, x: position.x, y: position.y,
+                    w: preview.width, h: preview.height })
+    }
+    return result
+  }
 
   // Whether any window runs past the left / right edge of the view.
   readonly property bool overflowLeft: {
@@ -135,6 +152,7 @@ Item {
     }
 
     Repeater {
+      id: windowPreviews
       model: windows
 
       delegate: Item {
@@ -149,6 +167,10 @@ Item {
         required property bool floating
         required property bool focused
         readonly property var toplevel: view.toplevelFor ? view.toplevelFor(address) : null
+        readonly property bool previewActive: view.live && view.visible
+          && x + width > 0 && x < view.width
+          && y + height > view.captureTop && y < view.captureBottom
+        readonly property bool hasPreview: capture.hasContent
 
         x: view.originX + cx * view.s
         y: cy * view.s
@@ -167,9 +189,10 @@ Item {
         }
 
         ScreencopyView {
+          id: capture
           anchors.fill: parent
-          captureSource: win.toplevel
-          live: view.live
+          captureSource: win.previewActive ? win.toplevel : null
+          live: win.previewActive
           paintCursor: false
         }
 
