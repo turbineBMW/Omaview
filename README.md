@@ -73,6 +73,12 @@ Every window intersecting the overview viewport gets a preview, including
 scrolling columns outside the desktop monitor's bounds. Fully clipped previews
 and previews in a closed overview stop capturing.
 
+Window previews, their focus/hover borders, and workspace wallpapers follow
+Hyprland's `decoration:rounding`, scaled with the preview. Their content is
+clipped to the rounded corners; setting rounding to `0` makes them square.
+This applies to both scrolling and strip layouts. Theme/config reloads update
+the rounding while the overview is open, and reopening refreshes it as well.
+
 ## Native companion
 
 `native/omaview.cpp` is a small Hyprland plugin loaded on the first open. The
@@ -125,6 +131,8 @@ workspace switching, close/reopen, Ctrl+letter dock focus/launch actions, and
 pointer-driven pin reordering, cancellation, and persistence across shell restarts.
 Workspace animation checks sample intermediate positions in both directions
 and reverse a transition while Hyprland's active workspace changes immediately.
+Pixel checks verify rounded and square window/wallpaper corners after a config
+reload, plus rounding in the strip layout after reopening.
 The launch test uses a temporary desktop entry and runs `gtk-launch` directly
 inside the test session, bypassing UWSM's host-systemd scope wrapper.
 It uses the machine's installed system

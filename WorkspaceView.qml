@@ -1,5 +1,6 @@
 import Quickshell
 import Quickshell.Wayland
+import Quickshell.Widgets
 import QtQuick
 import QtQuick.Effects
 import qs.Commons
@@ -23,7 +24,7 @@ Item {
   property bool live: true
   property bool isActive: false
   property bool showBadges: true
-  property int radius: 0
+  property real radius: 0
   property int animationDuration: 220
   property int animationEasing: Easing.OutCubic
   // Resolves a Hyprland address to the Wayland toplevel to capture, and a
@@ -53,9 +54,15 @@ Item {
       var position = preview.mapToItem(null, 0, 0)
       result.push({ address: preview.address, capturing: preview.previewActive,
                     hasContent: preview.hasPreview, x: position.x, y: position.y,
-                    w: preview.width, h: preview.height })
+                    w: preview.width, h: preview.height, radius: preview.radius, border: preview.border.width })
     }
     return result
+  }
+
+  function wallpaperStatus() {
+    var position = wall.mapToItem(null, 0, 0)
+    return { workspace: view.wsId, x: position.x, y: position.y,
+             w: wall.width, h: wall.height, radius: wall.radius, scale: view.s }
   }
 
   // Whether any window runs past the left / right edge of the view.
@@ -103,6 +110,7 @@ Item {
 
     Rectangle {
       anchors.fill: parent
+      radius: view.clipToMonitor ? view.radius : 0
       gradient: Gradient {
         orientation: Gradient.Horizontal
         GradientStop { position: 0.0; color: view.overflowLeft ? "transparent" : "black" }
@@ -119,7 +127,7 @@ Item {
 
     // The mask is a sibling of this layer: a mask inside the item it masks
     // never renders.
-    layer.enabled: view.overflowLeft || view.overflowRight
+    layer.enabled: view.overflowLeft || view.overflowRight || (view.clipToMonitor && view.radius > 0)
     layer.effect: MultiEffect {
       maskEnabled: true
       maskSource: edgeMask
@@ -128,7 +136,7 @@ Item {
       maskSpreadAtMin: 1.0
     }
 
-    Rectangle {
+    ClippingRectangle {
       id: wall
       x: view.originX
       y: 0
@@ -136,7 +144,6 @@ Item {
       height: view.wallH
       radius: view.radius
       color: Color.background
-      clip: true
 
       Image {
         anchors.fill: parent
@@ -157,7 +164,7 @@ Item {
       id: windowPreviews
       model: windows
 
-      delegate: Item {
+      delegate: ClippingRectangle {
         id: win
         required property string address
         required property real cx
@@ -180,16 +187,18 @@ Item {
         width: Math.max(4, cw * view.s)
         height: Math.max(4, ch * view.s)
         z: floating ? 2 : (focused ? 1 : 0)
+        radius: view.radius
+        color: Color.background
+        // Keep the capture at the real window's full size when the focus
+        // border appears; clip its pixels and border to the same curve.
+        contentInsideBorder: false
+        border.width: (win.focused && view.isActive) || hover.containsMouse ? Math.max(1, Style.space(2)) : 0
+        border.color: Color.accent
 
         Behavior on x { NumberAnimation { duration: view.animationDuration; easing.type: view.animationEasing } }
         Behavior on y { NumberAnimation { duration: view.animationDuration; easing.type: view.animationEasing } }
         Behavior on width { NumberAnimation { duration: view.animationDuration; easing.type: view.animationEasing } }
         Behavior on height { NumberAnimation { duration: view.animationDuration; easing.type: view.animationEasing } }
-
-        Rectangle {
-          anchors.fill: parent
-          color: Color.background
-        }
 
         ScreencopyView {
           id: capture
@@ -202,8 +211,6 @@ Item {
         Rectangle {
           anchors.fill: parent
           color: hover.containsMouse ? Util.alpha(Color.accent, 0.10) : "transparent"
-          border.width: (win.focused && view.isActive) || hover.containsMouse ? Math.max(1, Style.space(2)) : 0
-          border.color: Color.accent
         }
 
         Image {

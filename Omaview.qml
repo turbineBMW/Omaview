@@ -68,6 +68,7 @@ Item {
     root.nativeReady = false
     root.nativeError = ""
     root.modePending = true
+    Style.refresh()
     if (root.appLibrary) root.appLibrary.refreshIcons()
     root.evaluateGuards()
     root.mergeAppRows()
@@ -108,12 +109,12 @@ Item {
 
   function status(arg) {
     return JSON.stringify({ opened: root.opened, nativeReady: root.nativeReady,
-      workspace: root.activeWsId, focusedAddress: root.focusedAddress,
+      workspace: root.activeWsId, focusedAddress: root.focusedAddress, rounding: root.previewRounding,
       filter: root.filterText, clients: root.clientsByWs, previews: root.previewStatus(), error: root.nativeError,
       dockHintsVisible: root.dockHintsVisible, dockShortcutKeys: root.dockShortcutKeys, dock: root.dockItems,
       dockSlots: root.dockSlotGeometry(), dockDragging: root.dockDragging, dockDropValid: root.dockDropValid,
       workspaceMotion: { running: workspaceAnimation.running, position: root.workspacePosition,
-        duration: root.previewDuration, views: root.workspaceStackStatus() } })
+        duration: root.previewDuration, views: root.workspaceStackStatus() }, wallpapers: root.wallpaperStatus() })
   }
 
   function previewStatus() {
@@ -122,6 +123,16 @@ Item {
     for (var i = 0; i < previews.count; i++) {
       var workspace = previews.itemAt(i)
       if (workspace) result = result.concat(workspace.previewStatus())
+    }
+    return result
+  }
+
+  function wallpaperStatus() {
+    var result = []
+    var previews = root.scrollingMode ? scrollingPreviews : workspacePreviews
+    for (var i = 0; i < previews.count; i++) {
+      var workspace = previews.itemAt(i)
+      if (workspace) result.push(workspace.wallpaperStatus())
     }
     return result
   }
@@ -373,6 +384,7 @@ Item {
     enabled: root.opened
     function onRawEvent(event) {
       var n = event.name
+      if (n === "configreloaded") Style.refresh()
       if (n === "omaview" && event.data === "unloaded") {
         root.nativeReady = false
         root.close()
@@ -1039,6 +1051,7 @@ Item {
   readonly property int iconSize: Style.space(56)
   readonly property int dockIcon: Style.space(44)
   readonly property int radius: Math.max(Style.cornerRadius, Style.space(6))
+  readonly property real previewRounding: Math.max(0, Style.cornerRadius)
 
   PanelWindow {
     id: panel
@@ -1194,7 +1207,7 @@ Item {
               wallpaper: root.wallpaper
               clipToMonitor: true
               isActive: modelData.id === root.activeWsId
-              radius: Style.space(6)
+              radius: root.previewRounding * s
               toplevelFor: root.toplevelFor
               live: panel.visible
               animationDuration: root.previewDuration
@@ -1229,7 +1242,7 @@ Item {
             wallpaper: root.wallpaper
             isActive: workspaceId === root.activeWsId
             showBadges: isActive
-            radius: root.radius
+            radius: root.previewRounding * s
             toplevelFor: root.toplevelFor
             live: panel.visible
             animationDuration: root.previewDuration

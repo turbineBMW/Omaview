@@ -45,12 +45,21 @@ work = tempfile.TemporaryDirectory(prefix="omaview-test-")
 base = Path(work.name)
 config = base / "hyprland.lua"
 config.write_text("""hl.monitor({output="", mode="1280x800@60", position="auto", scale=1})
-hl.config({general={layout="scrolling"}, input={resolve_binds_by_sym=true}, animations={enabled=false}, misc={disable_hyprland_logo=true, disable_splash_rendering=true}, ecosystem={no_update_news=true, no_donation_nag=true}})
+hl.config({general={layout="scrolling"}, decoration={rounding=0}, input={resolve_binds_by_sym=true}, animations={enabled=false}, misc={disable_hyprland_logo=true, disable_splash_rendering=true}, ecosystem={no_update_news=true, no_donation_nag=true}})
 hl.bind("SUPER + Left", hl.dsp.layout("focus l"))
 hl.bind("SUPER + SPACE", function()
     hl.exec_cmd("omarchy-shell shell toggle turbinebmw.omaview '{}'")
 end)
 """)
+config_base = config.read_text()
+# A real image is needed to catch rectangular image content covering a
+# rounded wallpaper background. Use a uniform color for pixel assertions.
+wallpaper_color = bytes.fromhex("e0c050")
+wallpaper_file = base / "wallpaper.ppm"
+wallpaper_file.write_bytes(b"P6\n16 16\n255\n" + wallpaper_color * 256)
+background = Path.home() / ".local/state/omarchy/current/background"
+background.parent.mkdir(parents=True)
+background.symlink_to(wallpaper_file)
 server_log = (base / "hyprland.log").open("w")
 server = subprocess.Popen(["Hyprland", "--config", str(config)],
                           env=os.environ | {"AQ_DRM_DEVICES": "/dev/null"},
@@ -192,6 +201,56 @@ try:
     actual = pixels[(y * width + x) * 3:(y * width + x) * 3 + 3]
     assert len(actual) == 3 and all(abs(a - b) < 12 for a, b in zip(actual, expected)), (actual.hex(), expected.hex())
     print("PASS: offscreen desktop windows have visible preview pixels without moving focus or layout; clipped captures stop", flush=True)
+
+    def screenshot_pixel(x, y):
+        shot = subprocess.check_output(["grim", "-t", "ppm", "-"], env=env)
+        magic, size, maximum, pixels = shot.split(b"\n", 3)
+        width, height = map(int, size.split())
+        x, y = int(x), int(y)
+        assert 0 <= x < width and 0 <= y < height
+        return pixels[(y * width + x) * 3:(y * width + x) * 3 + 3]
+
+    def close_color(actual, expected):
+        return all(abs(a - b) < 12 for a, b in zip(actual, expected))
+
+    def set_rounding(value):
+        config.write_text(config_base + f'\nhl.config({{decoration={{rounding={value}}}}})\n')
+        run("hyprctl", "reload")
+        wait_for(lambda: observed()["rounding"] == value)
+        time.sleep(.15)
+
+    address = original["activewindow"]["address"]
+    window_color = bytes.fromhex(colors[original["activewindow"]["class"].removeprefix("omaview-test-")])
+
+    def window_corner():
+        preview = next(p for p in observed()["previews"] if p["address"] == address)
+        assert preview["capturing"] and preview["hasContent"] and preview["border"] > 0
+        return screenshot_pixel(preview["x"] + 3, preview["y"] + 3)
+
+    assert observed()["rounding"] == 0
+    assert all(p["radius"] == 0 for p in observed()["previews"])
+    assert close_color(window_corner(), window_color)
+    set_rounding(48)
+    assert all(p["radius"] > 0 for p in observed()["previews"])
+    assert not close_color(window_corner(), window_color), "Window capture must be clipped at rounded corners"
+
+    ipc("stepWorkspace", "1")
+    wait_for(lambda: observed()["workspace"] == 2 and not observed()["workspaceMotion"]["running"])
+
+    def wallpaper_corner():
+        wall = next(w for w in observed()["wallpapers"] if w["workspace"] == 2)
+        assert abs(wall["radius"] - observed()["rounding"] * wall["scale"]) < .001
+        assert close_color(screenshot_pixel(wall["x"] + wall["w"] / 2, wall["y"] + wall["h"] / 2), wallpaper_color)
+        return screenshot_pixel(wall["x"] + 2, wall["y"] + wall["h"] - 3)
+
+    assert not close_color(wallpaper_corner(), wallpaper_color), "Wallpaper image must be clipped at rounded corners"
+    set_rounding(0)
+    assert close_color(wallpaper_corner(), wallpaper_color), "Zero rounding must restore square wallpaper corners"
+    ipc("stepWorkspace", "-1")
+    wait_for(lambda: observed()["workspace"] == 1 and not observed()["workspaceMotion"]["running"])
+    wait_for(lambda: all(p["hasContent"] for p in observed()["previews"] if p["capturing"]))
+    assert close_color(window_corner(), window_color), "Zero rounding must restore square window corners"
+    print("PASS: actual window and wallpaper pixels follow Hyprland rounding, including zero after a live config reload", flush=True)
 
     for direction in ("l", "l", "r", "r"):
         before = compositor()["activewindow"]["address"]
@@ -452,6 +511,15 @@ try:
     wait_for(lambda: not observed()["opened"])
     assert json.loads(pin_file.read_text()) == reordered
     print("PASS: pin order survives shell restart; a small pointer movement still behaves as a normal click", flush=True)
+
+    # A runtime change made while the overview is closed is refreshed on open.
+    run("hyprctl", "eval", 'hl.config({decoration={rounding=24}})')
+    shell("summon", "turbinebmw.omaview", '{"layout":"strip"}')
+    wait_for(lambda: observed()["opened"] and observed()["nativeReady"] and observed()["rounding"] == 24)
+    assert all(abs(w["radius"] - 24 * w["scale"]) < .001 for w in observed()["wallpapers"])
+    assert all(p["radius"] > 0 for p in observed()["previews"])
+    shell("hide", "turbinebmw.omaview")
+    print("PASS: strip previews use the same rounding and pick up runtime changes on reopen", flush=True)
 except Exception:
     for name in ("shell.log", "hyprland.log"):
         path = base / name
