@@ -1,23 +1,21 @@
 # Omaview
 
-Omaview is a fullscreen overview for the Omarchy shell on Hyprland: niri-style workspaces
-on top, a GNOME-style grid of apps and Omarchy menus in the middle, a dock at
-the bottom.
+A fullscreen overview for Omarchy: live workspaces, an app launcher, Omarchy
+menus, and a dock. Inspired by niri's overview and GNOME's app grid.
 
-```bash
-omarchy-shell shell toggle turbinebmw.omaview '{}'
-```
+![Scrolling through workspaces and launching apps in Omaview](docs/scrolling-and-launching.gif)
 
 ## Install
 
-The supported target is Omarchy with its Quickshell shell and Hyprland 0.56.2
-(the version tested). Install and enable the plugin with:
+Requires Omarchy with Quickshell. Tested with **Hyprland 0.56.2**; other
+versions haven't been validated.
 
 ```bash
 omarchy plugin add https://github.com/turbineBMW/Omaview --enable
 ```
 
-Replace the existing overview/menu binding in `~/.config/hypr/bindings.lua`:
+To open it with **Super+Space**, replace your existing binding in
+`~/.config/hypr/bindings.lua`:
 
 ```lua
 hl.unbind("SUPER + SPACE")
@@ -26,175 +24,75 @@ hl.bind("SUPER + SPACE", function()
 end)
 ```
 
-Reload with `hyprctl reload` and check `hyprctl configerrors`. The first open
-builds and loads the bundled native companion automatically. Standard Omarchy
-already supplies its build dependencies; no separate Hyprpm installation or
-personal Lua helper files are needed. The plugin does not edit Hyprland
-configuration. Other Hyprland versions have not been validated.
+Run `hyprctl reload`, then `hyprctl configerrors` to check the config.
+You can also run the `omarchy-shell` command above directly.
 
-## Top: workspaces
+The first open builds and loads a small native Hyprland companion. Standard
+Omarchy includes the build dependencies; there's no separate Hyprpm setup.
+After an update that changes the companion, restart your Hyprland session.
 
-The mode follows the layout (`tiledLayout` from `hyprctl`) of the workspace you
-open omaview on, and stays put while you move between workspaces inside it.
+## Workspaces
 
-- **Scrolling layout** — the current workspace is always centered on its
-  wallpaper, with live window previews at their real positions. Columns
-  outside the monitor sit off the wallpaper to the left and right; where they
-  run past the edge of the screen they fade out. A sliver of the workspace
-  above and below peeks in; the one below is an empty workspace when you are
-  on the last, as in niri. Switching workspaces slides this stack vertically
-  with the same 220 ms ease-out timing as window scrolling. Switching again
-  during a transition continues from the current position.
-- **Any other layout** — no large view: every workspace on the monitor sits in
-  one horizontal strip, the focused one slightly larger. The strip shrinks to
-  fit when there are many workspaces, and the app grid gets the freed space.
+With Hyprland's scrolling layout, the current workspace sits in the center,
+with neighboring workspaces peeking in above and below. Other layouts get a
+compact strip of workspace thumbnails.
 
-Window and workspace changes take effect in Hyprland immediately. The native
-companion keeps the overview's search input available while Hyprland owns the
-active window and the tiling layout. Closing only hides the overview.
+- Click a window to focus it; double-click to jump into it. Middle-click closes it.
+- Click a workspace to switch to it without leaving the overview.
+- **Ctrl+Up/Down** switches workspaces. Moving past the last occupied one gives
+  you an empty workspace.
+- **Ctrl+Left/Right** moves focus between windows using the current layout.
 
-- Click a window to focus it while staying in the overview; double-click to exit
-  onto it. Middle-click requests that the application close the window.
-- Click a workspace thumbnail or a peek to switch workspace and stay open.
-- `Ctrl+Up` / `Ctrl+Down` switch between numbered workspaces on the current
-  monitor. Moving down from the last occupied workspace creates one empty
-  workspace; repeated presses there keep the same empty workspace.
-- `Ctrl+Left` / `Ctrl+Right` dispatch native focus for the active workspace's
-  layout, including scrolling columns and ordinary tiled/floating focus.
-- Your normal Super focus, move, resize, float, fullscreen, consume/expel, and
-  workspace bindings continue to operate on the real active window.
-- `Esc` clears search, goes back in a menu, then closes. `SUPER+SPACE` toggles.
+Your usual Hyprland shortcuts still work, so you can move, resize, or rearrange
+windows while the overview is open. Previews are live, including windows on
+other workspaces.
 
-The preview uses Hyprland's actual reported positions and focused address.
-There is no independent window selection, guessed neighbor, simulated scroll
-offset, focus replay on close, or callback required in individual bindings.
-Geometry notifications come from the native companion; the shell does not poll.
-Every window intersecting the overview viewport gets a preview, including
-scrolling columns outside the desktop monitor's bounds. Fully clipped previews
-and previews in a closed overview stop capturing.
+![Using Omaview with the dwindle layout](docs/dwindle-layout.gif)
 
-Window previews, their focus/hover borders, and workspace wallpapers follow
-Hyprland's `decoration:rounding`, scaled with the preview. Their content is
-clipped to the rounded corners; setting rounding to `0` makes them square.
-This applies to both scrolling and strip layouts. Theme/config reloads update
-the rounding while the overview is open, and reopening refreshes it as well.
+## Apps, menus, and the dock
 
-## Native companion
+Type to search apps and Omarchy menu entries together. Use the arrow keys and
+**Enter** to choose one. Your Omarchy menu extensions show up here too.
+**Esc** clears the search, backs out of a menu, then closes the overview.
 
-`native/omaview.cpp` is a small Hyprland plugin loaded on the first open. The
-launcher `native/ensure-native.sh` compiles it against installed headers and
-caches the binary under `~/.cache/omaview/<Hyprland ABI>/<source hash>/`.
-It needs `g++`, `pkg-config`, `jq`, `flock`, and the development headers supplied
-by the installed Hyprland and its dependencies. Omarchy includes `base-devel`,
-`jq`, and `hyprland`; a trimmed installation missing those prerequisites gets an
-error identifying what is missing. No package installation or elevated access
-is attempted. The ABI guard rejects mismatched
-headers. An incompatible Hyprland upgrade can require updating this companion;
-an ordinary compatible rebuild happens automatically on the next session's first
-open. A load failure produces a notification and leaves the overview closed.
+![Browsing Omarchy menus in Omaview](docs/omarchy-menus.gif)
 
-The plugin uses event listeners and a custom state query, without replacing
-Hyprland functions or modifying its layout. It routes keyboard input only while
-Omaview's nonexclusive layer is mapped. Lock screens, exclusive layers and seat
-grabs retain Hyprland's normal handling.
+The dock holds pinned apps followed by anything else that's running.
 
-`hyprctl omaview-state` reads clients, monitors, workspaces and the active window
-in a single compositor turn. `omaview>>geometry` events indicate changed layout
-coordinates. The QML view reads those observations and sends normal dispatches.
-Window capture stops while the overview is closed.
+- **Click** to launch an app or focus its windows; click again to cycle through them.
+- **Middle-click** to open a new instance.
+- **Right-click** to pin or unpin. You can also pin apps from the grid.
+- **Drag** pinned icons to reorder them. Press Esc or drop outside the pinned
+  section to cancel.
+- Hold **Ctrl** to show letter shortcuts, then press **Ctrl+A**, **Ctrl+B**, etc.
+  to switch to that app and close the overview.
 
-Hyprland 0.56.2 normally skips capture frames for windows entirely outside their
-desktop monitor. The companion completes the overview's pending frames for
-those windows through Hyprland's existing capture renderer. Capture permissions
-and `no_screen_share` rules still apply. This uses internal capture interfaces
-as well as event listeners, so matching compositor headers remain required.
+Pins are saved in `~/.config/omarchy/omaview-pinned.json`
+(or under `XDG_CONFIG_HOME` if set).
 
-After an update that changes the native companion, restart the Hyprland session
-to load the new version. The loader reports an old loaded companion instead of
-silently continuing with it.
+![Using and reordering the Omaview dock](docs/dock.gif)
 
-For details, alternatives, source references and limitations, see
-[NATIVE-OVERVIEW.md](NATIVE-OVERVIEW.md).
+## Options
 
-To run the integration checks (opens a separate, temporary Hyprland window):
+Pass a JSON payload to the toggle command to choose a layout or open a submenu:
 
 ```bash
-python3 ~/.config/omarchy/plugins/turbinebmw.omaview/tests/integration.py
+omarchy-shell shell toggle turbinebmw.omaview '{"layout":"strip"}'
+omarchy-shell shell toggle turbinebmw.omaview '{"menu":"setup"}'
 ```
 
-The test mounts an empty temporary home using Bubblewrap, starts a separate
-compositor and the real Omarchy shell, and runs the actual plugin installer.
-It verifies the first-open native build from an empty cache, navigation in
-scrolling and dwindle layouts, actual preview pixels for offscreen windows,
-capture visibility, search after focus changes, geometry updates,
-workspace switching, close/reopen, Ctrl+letter dock focus/launch actions, and
-pointer-driven pin reordering, cancellation, and persistence across shell restarts.
-Workspace animation checks sample intermediate positions in both directions
-and reverse a transition while Hyprland's active workspace changes immediately.
-Pixel checks verify rounded and square window/wallpaper corners after a config
-reload, plus rounding in the strip layout after reopening.
-The launch test uses a temporary desktop entry and runs `gtk-launch` directly
-inside the test session, bypassing UWSM's host-systemd scope wrapper.
-It uses the machine's installed system
-packages, so this tests independence from personal configuration rather than a
-fresh OS installation. Test-only tools are `bwrap`, `dbus-run-session`, `git`,
-`python3`, `foot`, `wtype`, and `grim`.
+`layout` accepts `scrolling` or `strip`. Leave it out to follow the current
+workspace's layout. `menu` accepts an Omarchy menu ID or alias.
 
-## Middle: apps and Omarchy menus
+See [Developing Omaview](DEVELOPING.md) for build requirements, integration
+checks, and reload notes, or [Native overview](NATIVE-OVERVIEW.md) for the
+architecture.
 
-Every root entry of the Omarchy menu other than Apps (Learn, Trigger, Style,
-Setup, …) is a glyph tile ahead of the app icons. Opening one replaces the grid
-with that submenu's items; `Backspace`, `Esc`, or the back pill returns.
+## Credits
 
-The menu is read from the same sources as the Omarchy menu —
-`$OMARCHY_PATH/default/omarchy/omarchy-menu.jsonc` plus
-`~/.config/omarchy/extensions/omarchy-menu.jsonc` — including `when:` /
-`checked:` guards and the font and power-profile providers, so your own
-extensions show up here too.
+Thanks to [rosakodu](https://github.com/rosakodu) for
+[Omarchy Dock](https://github.com/rosakodu/omarchy-dock) and their work on a
+native dock for Omarchy.
 
-Type to search apps and menu entries together. Arrows move, `Enter` activates,
-`Esc` clears the search, then goes back, then closes.
-
-## Bottom: dock
-
-Pinned apps, then running apps that aren't pinned. Click focuses the app's
-most recent window (again to step to its next window) or launches it;
-middle-click launches a new instance; right-click pins or unpins. Right-click
-an app in the grid to pin it. Pins live in
-`~/.config/omarchy/omaview-pinned.json`.
-Menu extensions and pins respect `XDG_CONFIG_HOME` when set.
-
-**Drag a pinned icon** left or right to reorder it. The floating icon and
-insertion marker show where it will land. Release within the pinned section
-to save the order; press **Esc** or release outside that section to cancel.
-The saved order survives shell restarts. Running apps that are not pinned
-stay after the pinned section.
-
-Hold **Ctrl** to show letter badges on the dock. Press **Ctrl+A**, **Ctrl+B**,
-and so on to activate the corresponding app and close the overview. Running
-apps use the same window selection as clicking their icon; other apps launch.
-Release Ctrl to hide the badges. Letters are assigned left to right, up to
-26 icons, and stay attached to the same apps until Ctrl is released. After
-reordering pins, the next Ctrl press assigns letters in the new order.
-Ctrl+Arrow navigation remains available, and normal Hyprland bindings take
-precedence when they use the same keys. A letter assigned to the dock takes
-precedence over a search-editing shortcut such as Ctrl+U.
-
-## Payload
-
-| Key      | Values                  | Effect                                  |
-|----------|-------------------------|-----------------------------------------|
-| `layout` | `scrolling`, `strip`    | Force the top section's mode            |
-| `menu`   | a menu id or alias      | Open straight into that Omarchy submenu |
-
-## Notes
-
-- `MenuModel.js` is a copy of the Omarchy menu's model
-  (`$OMARCHY_PATH/shell/plugins/menu/MenuModel.js`); re-copy it if the menu
-  format changes upstream. Its license is preserved in
-  [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
-- The manifest sets `keepLoaded` so omaview opens instantly. The kept
-  instance is not replaced on hot reload, so after editing the QML run
-  `omarchy restart shell`.
-- Window previews use Hyprland's toplevel export via Quickshell's
-  `ScreencopyView`, so windows on other workspaces are live too.
+Omaview also uses Omarchy's menu model. See
+[Third-party notices](THIRD-PARTY-NOTICES.md) for acknowledgments and license texts.
