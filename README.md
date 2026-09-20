@@ -31,6 +31,19 @@ The first open builds and loads a small native Hyprland companion. Standard
 Omarchy includes the build dependencies; there's no separate Hyprpm setup.
 After an update that changes the companion, restart your Hyprland session.
 
+## Remove
+
+Run `omarchy plugin remove turbinebmw.omaview`, then restart your Hyprland
+session to unload the native companion. If you added the Super+Space binding
+above, remove that binding and restore your previous one before reloading
+Hyprland. The plugin does not modify Hyprland configuration during install.
+
+Omarchy removes the plugin checkout. Your dock pins remain in
+`~/.config/omarchy/omaview-pinned.json` (or under `XDG_CONFIG_HOME`), and
+compiled companions remain in `~/.cache/omaview/` (or under `XDG_CACHE_HOME`).
+You may delete those files after the session restarts if you no longer need
+them.
+
 ## Workspaces
 
 With Hyprland's scrolling layout, the current workspace sits in the center,
@@ -94,5 +107,6 @@ Thanks to [rosakodu](https://github.com/rosakodu) for
 [Omarchy Dock](https://github.com/rosakodu/omarchy-dock) and their work on a
 native dock for Omarchy.
 
-Omaview also uses Omarchy's menu model. See
-[Third-party notices](THIRD-PARTY-NOTICES.md) for acknowledgments and license texts.
+Omaview is released under the [MIT license](LICENSE). It also uses Omarchy's
+menu model; see [Third-party notices](THIRD-PARTY-NOTICES.md) for acknowledgments
+and the licenses of reused components.
