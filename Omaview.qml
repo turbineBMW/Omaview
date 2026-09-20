@@ -61,6 +61,7 @@ Item {
     root.navStack = []
     root.activeMenu = "root"
     root.hoveredDockKey = ""
+    root.setDockHints(false)
     root.stateLoaded = false
     root.nativeReady = false
     root.nativeError = ""
@@ -78,6 +79,7 @@ Item {
   // removes the layer; Hyprland returns keyboard input to its active window.
   function close() {
     root.opened = false
+    root.setDockHints(false)
     refreshDebounce.stop()
   }
 
@@ -103,7 +105,8 @@ Item {
   function status(arg) {
     return JSON.stringify({ opened: root.opened, nativeReady: root.nativeReady,
       workspace: root.activeWsId, focusedAddress: root.focusedAddress,
-      filter: root.filterText, clients: root.clientsByWs, previews: root.previewStatus(), error: root.nativeError })
+      filter: root.filterText, clients: root.clientsByWs, previews: root.previewStatus(), error: root.nativeError,
+      dockHintsVisible: root.dockHintsVisible, dockShortcutKeys: root.dockShortcutKeys, dock: root.dockItems })
   }
 
   function previewStatus() {
@@ -680,6 +683,35 @@ Item {
   property var pinned: []
   property bool pinnedLoaded: false
   property string hoveredDockKey: ""
+  property bool dockHintsVisible: false
+  property var dockShortcutKeys: []
+
+  function setDockHints(held) {
+    held = held && root.opened
+    if (held === root.dockHintsVisible) return
+    // Keep letters attached to app identities if windows change while Ctrl
+    // is held. A fresh press assigns a-z in the current dock order.
+    root.dockShortcutKeys = held ? root.dockItems.slice(0, 26).map(function(item) { return item.key }) : []
+    root.dockHintsVisible = held
+  }
+
+  function dockShortcutLetter(key) {
+    var index = root.dockShortcutKeys.indexOf(key)
+    return index >= 0 ? String.fromCharCode(97 + index) : ""
+  }
+
+  function activateDockShortcut(index) {
+    if (!root.opened || !root.dockHintsVisible || index < 0 || index >= root.dockShortcutKeys.length) return false
+    var key = root.dockShortcutKeys[index]
+    for (var i = 0; i < root.dockItems.length; i++) {
+      if (root.dockItems[i].key !== key) continue
+      root.activateDockItem(root.dockItems[i], false)
+      return true
+    }
+    // The app disappeared after its badge was shown. Do not reinterpret its
+    // letter as a different app or as a search-editing command.
+    return true
+  }
   readonly property var defaultPinCandidates: [
     "chromium", "firefox", "brave-browser", "com.mitchellh.ghostty", "Alacritty", "kitty", "foot",
     "org.gnome.Nautilus", "nvim", "code", "obsidian", "signal-desktop", "spotify", "1password"
@@ -831,7 +863,10 @@ Item {
   PanelWindow {
     id: panel
     visible: root.opened && root.nativeReady && root.stateLoaded
-    onVisibleChanged: if (visible) keyCatcher.forceActiveFocus()
+    onVisibleChanged: {
+      if (visible) keyCatcher.forceActiveFocus()
+      else root.setDockHints(false)
+    }
     anchors { top: true; bottom: true; left: true; right: true }
     color: "transparent"
     WlrLayershell.namespace: "omarchy-omaview"
@@ -887,6 +922,18 @@ Item {
 
       Keys.onPressed: function(event) {
         var ctrl = (event.modifiers & Qt.ControlModifier) !== 0
+        root.setDockHints(ctrl || event.key === Qt.Key_Control)
+        if (event.key === Qt.Key_Control) {
+          event.accepted = true
+          return
+        }
+        if (ctrl && !(event.modifiers & (Qt.AltModifier | Qt.MetaModifier))
+            && event.key >= Qt.Key_A && event.key <= Qt.Key_Z) {
+          if (event.isAutoRepeat || root.activateDockShortcut(event.key - Qt.Key_A)) {
+            event.accepted = true
+            return
+          }
+        }
         if (event.key === Qt.Key_Escape) {
           if (root.filterText) root.setFilter("")
           else if (!root.goBack()) root.close()
@@ -919,6 +966,12 @@ Item {
           return
         }
         event.accepted = true
+      }
+
+      Keys.onReleased: function(event) {
+        if (event.isAutoRepeat) return
+        root.setDockHints(event.key !== Qt.Key_Control && (event.modifiers & Qt.ControlModifier) !== 0)
+        if (event.key === Qt.Key_Control) event.accepted = true
       }
 
       // ------------------------------------------------ workspaces (top)
@@ -1267,6 +1320,7 @@ Item {
             delegate: Row {
               id: dockSlot
               required property var modelData
+              readonly property string shortcutLetter: root.dockShortcutLetter(modelData.key)
               spacing: Style.space(6)
 
               Rectangle {
@@ -1316,6 +1370,29 @@ Item {
                       radius: height / 2
                       color: Color.accent
                     }
+                  }
+                }
+
+                Rectangle {
+                  visible: root.dockHintsVisible && dockSlot.shortcutLetter !== ""
+                  anchors.top: dockImage.top
+                  anchors.right: dockImage.right
+                  anchors.topMargin: -Style.space(3)
+                  anchors.rightMargin: -Style.space(3)
+                  width: Style.space(20)
+                  height: width
+                  radius: Style.space(6)
+                  color: Color.accent
+                  border.width: Math.max(1, Style.space(1))
+                  border.color: Color.background
+
+                  Text {
+                    anchors.centerIn: parent
+                    text: dockSlot.shortcutLetter
+                    color: Color.background
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.caption
+                    font.bold: true
                   }
                 }
 

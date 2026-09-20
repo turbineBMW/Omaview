@@ -119,7 +119,10 @@ compositor and the real Omarchy shell, and runs the actual plugin installer.
 It verifies the first-open native build from an empty cache, navigation in
 scrolling and dwindle layouts, actual preview pixels for offscreen windows,
 capture visibility, search after focus changes, geometry updates,
-workspace switching, and close/reopen. It uses the machine's installed system
+workspace switching, close/reopen, and Ctrl+letter dock focus/launch actions.
+The launch test uses a temporary desktop entry and runs `gtk-launch` directly
+inside the test session, bypassing UWSM's host-systemd scope wrapper.
+It uses the machine's installed system
 packages, so this tests independence from personal configuration rather than a
 fresh OS installation. Test-only tools are `bwrap`, `dbus-run-session`, `git`,
 `python3`, `foot`, `wtype`, and `grim`.
@@ -147,6 +150,15 @@ middle-click launches a new instance; right-click pins or unpins. Right-click
 an app in the grid to pin it. Pins live in
 `~/.config/omarchy/omaview-pinned.json`.
 Menu extensions and pins respect `XDG_CONFIG_HOME` when set.
+
+Hold **Ctrl** to show letter badges on the dock. Press **Ctrl+A**, **Ctrl+B**,
+and so on to activate the corresponding app and close the overview. Running
+apps use the same window selection as clicking their icon; other apps launch.
+Release Ctrl to hide the badges. Letters are assigned left to right, up to
+26 icons, and stay attached to the same apps until Ctrl is released.
+Ctrl+Arrow navigation remains available, and normal Hyprland bindings take
+precedence when they use the same keys. A letter assigned to the dock takes
+precedence over a search-editing shortcut such as Ctrl+U.
 
 ## Payload
 

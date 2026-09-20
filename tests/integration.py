@@ -108,6 +108,24 @@ try:
     if not instance:
         raise RuntimeError((base / "hyprland.log").read_text())
     env.update(HYPRLAND_INSTANCE_SIGNATURE=instance["instance"], WAYLAND_DISPLAY=instance["wl_socket"])
+    # Keep application launches inside this test's compositor and session bus.
+    # The real gtk-launch still resolves and starts the test desktop entry;
+    # only UWSM's host-systemd scope wrapper is replaced for isolation.
+    launcher_bin = base / "bin"
+    launcher_bin.mkdir()
+    launcher_wrapper = launcher_bin / "uwsm-app"
+    launcher_wrapper.write_text('#!/bin/sh\nif [ "$1" = "--" ]; then shift; fi\nexec "$@"\n')
+    launcher_wrapper.chmod(0o755)
+    env["PATH"] = str(launcher_bin) + os.pathsep + env["PATH"]
+    applications = Path.home() / ".local/share/applications"
+    applications.mkdir(parents=True)
+    (applications / "omaview-dock-launch.desktop").write_text(
+        '[Desktop Entry]\nType=Application\nName=Omaview Dock Launch\n'
+        'Exec=foot -a omaview-dock-launch -T "Omaview dock launch" sleep 600\n'
+        'Icon=utilities-terminal\nTerminal=false\nStartupWMClass=omaview-dock-launch\n')
+    pin_file = Path.home() / ".config/omarchy/omaview-pinned.json"
+    pin_file.parent.mkdir(parents=True)
+    pin_file.write_text('["omaview-dock-launch"]\n')
     time.sleep(.5)
     assert run("hyprctl", "eval", "assert(not pcall(require, 'hypr.layout_aware')); assert(not pcall(require, 'hypr.dynamic_workspaces'))") == "ok"
     assert json.loads(run("hyprctl", "-j", "plugin", "list")) == []
@@ -237,6 +255,55 @@ try:
     assert run("hyprctl", "configerrors") == ""
     assert not (Path.home() / ".config/hypr").exists()
     print("PASS: close/reopen preserves focus and reuses the compiled companion; no Hyprland config installed", flush=True)
+
+    shell("summon", "turbinebmw.omaview", "{}")
+    wait_for(lambda: observed()["opened"] and observed()["nativeReady"] and observed()["dock"])
+    run("wtype", "search")
+    wait_for(lambda: observed()["filter"] == "search")
+    assert not observed()["dockHintsVisible"]
+
+    def dock_chord(*keys):
+        # wtype's -M sends only a modifiers packet. Include the actual Ctrl
+        # key press/release that a physical keyboard sends to show the hints.
+        return subprocess.Popen(["wtype", "-P", "Control_L", "-M", "ctrl", "-s", "700",
+                                 *keys, "-p", "Control_L", "-m", "ctrl"], env=env)
+
+    held = dock_chord()
+    processes.append(held)
+    wait_for(lambda: observed()["dockHintsVisible"])
+    shortcuts = observed()["dockShortcutKeys"]
+    assert shortcuts == [d["key"] for d in observed()["dock"]][:26]
+    held.wait(timeout=3)
+    wait_for(lambda: not observed()["dockHintsVisible"])
+    assert observed()["filter"] == "search" and observed()["opened"]
+    print("PASS: holding Ctrl shows left-to-right dock hints; releasing hides them without editing search", flush=True)
+
+    # Use the same MRU/cycling behavior as a mouse click, and ensure the
+    # chord does not enter its letter into the search field.
+    target = next(d for d in observed()["dock"] if d["windows"] and not any(w["focused"] for w in d["windows"]))
+    index = next(i for i, d in enumerate(observed()["dock"]) if d["key"] == target["key"])
+    address = min(target["windows"], key=lambda w: w["focusOrder"])["address"]
+    held = dock_chord("-k", chr(ord("a") + index))
+    processes.append(held)
+    wait_for(lambda: observed()["dockHintsVisible"])
+    held.wait(timeout=3)
+    wait_for(lambda: not observed()["opened"])
+    wait_for(lambda: compositor()["activewindow"].get("address") == address)
+    assert observed()["filter"] == "search" and not observed()["dockHintsVisible"]
+    print("PASS: Ctrl+letter focuses the dock app, closes the overview, and preserves search text", flush=True)
+
+    shell("summon", "turbinebmw.omaview", "{}")
+    wait_for(lambda: observed()["opened"] and observed()["nativeReady"])
+    assert not observed()["dockHintsVisible"]
+    launcher = observed()["dock"][0]
+    assert launcher["appId"] == "omaview-dock-launch" and not launcher["windows"]
+    held = dock_chord("-k", "a")
+    processes.append(held)
+    wait_for(lambda: observed()["dockHintsVisible"])
+    held.wait(timeout=3)
+    wait_for(lambda: not observed()["opened"])
+    wait_for(lambda: any(c["class"] == "omaview-dock-launch" for c in compositor()["clients"]))
+    print("PASS: Ctrl+A launches an unstarted pinned app and closes the overview", flush=True)
 except Exception:
     for name in ("shell.log", "hyprland.log"):
         path = base / name
