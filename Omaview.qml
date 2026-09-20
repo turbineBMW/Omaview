@@ -62,6 +62,7 @@ Item {
     root.activeMenu = "root"
     root.hoveredDockKey = ""
     root.setDockHints(false)
+    root.clearDockDrag()
     root.stateLoaded = false
     root.nativeReady = false
     root.nativeError = ""
@@ -80,6 +81,7 @@ Item {
   function close() {
     root.opened = false
     root.setDockHints(false)
+    root.clearDockDrag()
     refreshDebounce.stop()
   }
 
@@ -106,7 +108,8 @@ Item {
     return JSON.stringify({ opened: root.opened, nativeReady: root.nativeReady,
       workspace: root.activeWsId, focusedAddress: root.focusedAddress,
       filter: root.filterText, clients: root.clientsByWs, previews: root.previewStatus(), error: root.nativeError,
-      dockHintsVisible: root.dockHintsVisible, dockShortcutKeys: root.dockShortcutKeys, dock: root.dockItems })
+      dockHintsVisible: root.dockHintsVisible, dockShortcutKeys: root.dockShortcutKeys, dock: root.dockItems,
+      dockSlots: root.dockSlotGeometry(), dockDragging: root.dockDragging, dockDropValid: root.dockDropValid })
   }
 
   function previewStatus() {
@@ -685,13 +688,101 @@ Item {
   property string hoveredDockKey: ""
   property bool dockHintsVisible: false
   property var dockShortcutKeys: []
+  // Freeze the delegates during a pointer press so a changing window list
+  // cannot destroy the MouseArea that owns the grab.
+  property var dockDisplayItems: []
+  property var dockPressedItem: null
+  property bool dockDragging: false
+  property bool dockDragCanceled: false
+  property point dockDragPoint: Qt.point(0, 0)
+  property bool dockDropValid: false
+  property string dockDropBefore: ""
+  property real dockDropX: 0
+
+  function syncDockItems() {
+    if (!root.dockPressedItem) root.dockDisplayItems = root.dockItems
+  }
+  onDockItemsChanged: root.syncDockItems()
+  Component.onCompleted: root.syncDockItems()
+
+  function clearDockDrag() {
+    root.dockDragging = false
+    root.dockDragCanceled = false
+    root.dockDropValid = false
+    root.dockPressedItem = null
+    root.syncDockItems()
+  }
+
+  function cancelDockDrag() {
+    root.dockDragCanceled = true
+    root.dockDragging = false
+    root.dockDropValid = false
+  }
+
+  function dockSlotGeometry() {
+    var result = []
+    for (var i = 0; i < dockIcons.count; i++) {
+      var slot = dockIcons.itemAt(i)
+      if (!slot) continue
+      var point = slot.mapToItem(null, 0, 0)
+      result.push({ key: slot.modelData.key, pinned: slot.modelData.pinned,
+                    x: point.x, y: point.y, w: slot.width, h: slot.height })
+    }
+    return result
+  }
+
+  function updateDockDrag(point) {
+    if (!root.dockPressedItem || root.dockDragCanceled) return
+    root.dockDragging = true
+    root.dockDragPoint = point
+    root.dockDropValid = false
+    root.dockDropBefore = ""
+    var left = 0, right = 0, found = false, targetFound = false
+    for (var i = 0; i < dockIcons.count; i++) {
+      var slot = dockIcons.itemAt(i)
+      if (!slot || !slot.modelData.pinned) continue
+      var position = slot.mapToItem(dock, 0, 0)
+      if (!found) { left = position.x; found = true }
+      right = position.x + slot.width
+      if (!targetFound && slot.modelData.key !== root.dockPressedItem.key && point.x < position.x + slot.width / 2) {
+        root.dockDropBefore = slot.modelData.appId
+        root.dockDropX = position.x - dockRow.spacing / 2
+        targetFound = true
+      }
+    }
+    if (!targetFound) root.dockDropX = right + dockRow.spacing / 2
+    var margin = Style.space(8)
+    root.dockDropValid = found && point.x >= left - margin && point.x <= right + margin
+      && point.y >= -margin && point.y <= dock.height + margin
+  }
+
+  function finishDockDrag() {
+    if (root.dockDragging && root.dockDropValid && !root.dockDragCanceled && root.dockPressedItem) {
+      var next = root.pinned.slice()
+      var from = next.indexOf(root.dockPressedItem.appId)
+      if (from >= 0) {
+        next.splice(from, 1)
+        var to = root.dockDropBefore ? next.indexOf(root.dockDropBefore) : next.length
+        if (to >= 0) {
+          next.splice(to, 0, root.dockPressedItem.appId)
+          if (JSON.stringify(next) !== JSON.stringify(root.pinned)) {
+            root.pinned = next
+            pinnedFile.setText(JSON.stringify(next, null, 2) + "\n")
+          }
+        }
+      }
+    }
+    // MouseArea emits clicked after released. Keep the drag flag and frozen
+    // delegates until that event finishes so a drop cannot launch the app.
+    Qt.callLater(root.clearDockDrag)
+  }
 
   function setDockHints(held) {
     held = held && root.opened
     if (held === root.dockHintsVisible) return
     // Keep letters attached to app identities if windows change while Ctrl
     // is held. A fresh press assigns a-z in the current dock order.
-    root.dockShortcutKeys = held ? root.dockItems.slice(0, 26).map(function(item) { return item.key }) : []
+    root.dockShortcutKeys = held ? root.dockDisplayItems.slice(0, 26).map(function(item) { return item.key }) : []
     root.dockHintsVisible = held
   }
 
@@ -923,6 +1014,11 @@ Item {
       Keys.onPressed: function(event) {
         var ctrl = (event.modifiers & Qt.ControlModifier) !== 0
         root.setDockHints(ctrl || event.key === Qt.Key_Control)
+        if (event.key === Qt.Key_Escape && root.dockPressedItem) {
+          root.cancelDockDrag()
+          event.accepted = true
+          return
+        }
         if (event.key === Qt.Key_Control) {
           event.accepted = true
           return
@@ -1315,7 +1411,8 @@ Item {
           spacing: Style.space(6)
 
           Repeater {
-            model: root.dockItems
+            id: dockIcons
+            model: root.dockDisplayItems
 
             delegate: Row {
               id: dockSlot
@@ -1335,6 +1432,7 @@ Item {
                 id: dockItem
                 width: root.dockIcon + Style.space(8)
                 height: root.dockIcon + Style.space(10)
+                opacity: root.dockDragging && root.dockPressedItem && root.dockPressedItem.key === dockSlot.modelData.key ? 0.3 : 1
 
                 Rectangle {
                   anchors.fill: parent
@@ -1397,7 +1495,7 @@ Item {
                 }
 
                 Rectangle {
-                  visible: dockMouse.containsMouse
+                  visible: dockMouse.containsMouse && !root.dockDragging
                   anchors.bottom: parent.top
                   anchors.bottomMargin: Style.space(12)
                   anchors.horizontalCenter: parent.horizontalCenter
@@ -1423,7 +1521,33 @@ Item {
                   anchors.fill: parent
                   hoverEnabled: true
                   acceptedButtons: Qt.LeftButton | Qt.MiddleButton | Qt.RightButton
+                  preventStealing: true
+                  cursorShape: root.dockDragging ? Qt.ClosedHandCursor : Qt.PointingHandCursor
+                  property point pressPoint: Qt.point(0, 0)
+
+                  onPressed: function(mouse) {
+                    pressPoint = Qt.point(mouse.x, mouse.y)
+                    if (mouse.button === Qt.LeftButton && dockSlot.modelData.pinned) {
+                      root.dockPressedItem = dockSlot.modelData
+                      root.dockDragCanceled = false
+                    }
+                  }
+                  onPositionChanged: function(mouse) {
+                    if (!(mouse.buttons & Qt.LeftButton) || !root.dockPressedItem
+                        || root.dockPressedItem.key !== dockSlot.modelData.key || root.dockDragCanceled) return
+                    var dx = mouse.x - pressPoint.x, dy = mouse.y - pressPoint.y
+                    if (!root.dockDragging && dx * dx + dy * dy < drag.threshold * drag.threshold) return
+                    root.updateDockDrag(mapToItem(dock, mouse.x, mouse.y))
+                  }
+                  onReleased: function(mouse) {
+                    if (mouse.button === Qt.LeftButton && root.dockPressedItem) root.finishDockDrag()
+                  }
+                  onCanceled: {
+                    root.cancelDockDrag()
+                    Qt.callLater(root.clearDockDrag)
+                  }
                   onClicked: function(mouse) {
+                    if (root.dockDragging || root.dockDragCanceled) return
                     if (mouse.button === Qt.RightButton) root.togglePin(dockSlot.modelData.appId)
                     else root.activateDockItem(dockSlot.modelData, mouse.button === Qt.MiddleButton)
                   }
@@ -1431,6 +1555,31 @@ Item {
               }
             }
           }
+        }
+
+        Rectangle {
+          visible: root.dockDragging && root.dockDropValid
+          x: root.dockDropX - width / 2
+          anchors.verticalCenter: parent.verticalCenter
+          width: Style.space(3)
+          height: root.dockIcon
+          radius: width / 2
+          color: Color.accent
+          z: 10
+        }
+
+        Image {
+          visible: root.dockDragging
+          x: root.dockDragPoint.x - width / 2
+          y: root.dockDragPoint.y - height / 2
+          width: root.dockIcon
+          height: width
+          source: root.dockPressedItem ? root.iconSource(root.dockPressedItem.icon) : ""
+          sourceSize.width: 128
+          sourceSize.height: 128
+          scale: 1.12
+          opacity: root.dockDropValid ? 1 : 0.6
+          z: 20
         }
       }
     }

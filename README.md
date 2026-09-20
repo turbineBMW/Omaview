@@ -119,7 +119,8 @@ compositor and the real Omarchy shell, and runs the actual plugin installer.
 It verifies the first-open native build from an empty cache, navigation in
 scrolling and dwindle layouts, actual preview pixels for offscreen windows,
 capture visibility, search after focus changes, geometry updates,
-workspace switching, close/reopen, and Ctrl+letter dock focus/launch actions.
+workspace switching, close/reopen, Ctrl+letter dock focus/launch actions, and
+pointer-driven pin reordering, cancellation, and persistence across shell restarts.
 The launch test uses a temporary desktop entry and runs `gtk-launch` directly
 inside the test session, bypassing UWSM's host-systemd scope wrapper.
 It uses the machine's installed system
@@ -151,11 +152,18 @@ an app in the grid to pin it. Pins live in
 `~/.config/omarchy/omaview-pinned.json`.
 Menu extensions and pins respect `XDG_CONFIG_HOME` when set.
 
+**Drag a pinned icon** left or right to reorder it. The floating icon and
+insertion marker show where it will land. Release within the pinned section
+to save the order; press **Esc** or release outside that section to cancel.
+The saved order survives shell restarts. Running apps that are not pinned
+stay after the pinned section.
+
 Hold **Ctrl** to show letter badges on the dock. Press **Ctrl+A**, **Ctrl+B**,
 and so on to activate the corresponding app and close the overview. Running
 apps use the same window selection as clicking their icon; other apps launch.
 Release Ctrl to hide the badges. Letters are assigned left to right, up to
-26 icons, and stay attached to the same apps until Ctrl is released.
+26 icons, and stay attached to the same apps until Ctrl is released. After
+reordering pins, the next Ctrl press assigns letters in the new order.
 Ctrl+Arrow navigation remains available, and normal Hyprland bindings take
 precedence when they use the same keys. A letter assigned to the dock takes
 precedence over a search-editing shortcut such as Ctrl+U.

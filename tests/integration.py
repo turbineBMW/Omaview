@@ -13,6 +13,8 @@ import sys
 import tempfile
 import time
 
+from pointer import VirtualPointer
+
 plugin = Path(__file__).resolve().parents[1]
 
 if os.environ.get("OMAVIEW_TEST_ISOLATED") != "1":
@@ -125,7 +127,11 @@ try:
         'Icon=utilities-terminal\nTerminal=false\nStartupWMClass=omaview-dock-launch\n')
     pin_file = Path.home() / ".config/omarchy/omaview-pinned.json"
     pin_file.parent.mkdir(parents=True)
-    pin_file.write_text('["omaview-dock-launch"]\n')
+    for suffix in ("two", "three"):
+        (applications / f"omaview-dock-{suffix}.desktop").write_text(
+            '[Desktop Entry]\nType=Application\nName=Omaview Dock ' + suffix + '\n'
+            'Exec=foot -a omaview-dock-' + suffix + ' sleep 600\nIcon=utilities-terminal\nTerminal=false\n')
+    pin_file.write_text('["omaview-dock-launch", "omaview-dock-two", "omaview-dock-three"]\n')
     time.sleep(.5)
     assert run("hyprctl", "eval", "assert(not pcall(require, 'hypr.layout_aware')); assert(not pcall(require, 'hypr.dynamic_workspaces'))") == "ok"
     assert json.loads(run("hyprctl", "-j", "plugin", "list")) == []
@@ -137,8 +143,9 @@ try:
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
         time.sleep(.2)
     shell_log = (base / "shell.log").open("w")
-    processes.append(subprocess.Popen(["qs", "-p", os.environ.get("OMARCHY_PATH", "/usr/share/omarchy") + "/shell"],
-                                      env=env, stdout=shell_log, stderr=shell_log))
+    shell_command = ["qs", "-p", os.environ.get("OMARCHY_PATH", "/usr/share/omarchy") + "/shell"]
+    shell_process = subprocess.Popen(shell_command, env=env, stdout=shell_log, stderr=shell_log)
+    processes.append(shell_process)
     wait_for(lambda: subprocess.run(["omarchy-shell", "shell", "ping"], env=env,
               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0, timeout=15)
 
@@ -304,6 +311,90 @@ try:
     wait_for(lambda: not observed()["opened"])
     wait_for(lambda: any(c["class"] == "omaview-dock-launch" for c in compositor()["clients"]))
     print("PASS: Ctrl+A launches an unstarted pinned app and closes the overview", flush=True)
+
+    shell("summon", "turbinebmw.omaview", "{}")
+    wait_for(lambda: observed()["opened"] and observed()["nativeReady"] and observed()["dockSlots"])
+    def pinned_order():
+        return [d["appId"] for d in observed()["dock"] if d["pinned"]]
+
+    def pinned_slots():
+        return [d for d in observed()["dockSlots"] if d["pinned"]]
+
+    pointer = VirtualPointer(env, 1280, 800)
+
+    def pointer_move(x, y):
+        pointer.move(x, y)
+        time.sleep(.06)
+
+    def pointer_button(state):
+        pointer.button(state == "down")
+        time.sleep(.06)
+
+    def center(slot):
+        return slot["x"] + slot["w"] / 2, slot["y"] + slot["h"] / 2
+
+    original_pins = pinned_order()
+    before_drag = compositor()
+    first, second, last = pinned_slots()
+    pointer_move(*center(first))
+    pointer_button("down")
+    pointer_move(last["x"] + last["w"] * .8, center(last)[1])
+    wait_for(lambda: observed()["dockDragging"] and observed()["dockDropValid"])
+    assert json.loads(pin_file.read_text()) == original_pins
+    pointer_button("up")
+    reordered = original_pins[1:] + original_pins[:1]
+    wait_for(lambda: pinned_order() == reordered and not observed()["dockDragging"])
+    wait_for(lambda: json.loads(pin_file.read_text()) == reordered)
+    assert observed()["opened"]
+    after_drag = compositor()
+    assert after_drag["activewindow"]["address"] == before_drag["activewindow"]["address"]
+    assert {c["address"] for c in after_drag["clients"]} == {c["address"] for c in before_drag["clients"]}
+    print("PASS: actual pointer drag reorders pinned icons, persists once on drop, and does not activate an app", flush=True)
+
+    held = dock_chord()
+    processes.append(held)
+    wait_for(lambda: observed()["dockHintsVisible"])
+    assert observed()["dockShortcutKeys"] == [d["key"] for d in observed()["dock"]][:26]
+    held.wait(timeout=3)
+
+    # Cancel inside the original icon so an accidental click would launch it.
+    first, second, last = pinned_slots()
+    pointer_move(*center(first))
+    pointer_button("down")
+    pointer_move(*center(last))
+    wait_for(lambda: observed()["dockDragging"])
+    run("wtype", "-k", "Escape")
+    pointer_move(*center(first))
+    pointer_button("up")
+    assert observed()["opened"] and pinned_order() == reordered
+    assert json.loads(pin_file.read_text()) == reordered
+
+    pointer_move(*center(first))
+    pointer_button("down")
+    pointer_move(center(first)[0], first["y"] - 80)
+    wait_for(lambda: observed()["dockDragging"] and not observed()["dockDropValid"])
+    pointer_button("up")
+    assert observed()["opened"] and pinned_order() == reordered
+    assert json.loads(pin_file.read_text()) == reordered
+    print("PASS: Escape and dropping outside the pinned section cancel; Ctrl badges follow the new order", flush=True)
+
+    # Restart only this test shell to prove the saved order is loaded from disk.
+    shell_process.terminate()
+    shell_process.wait(timeout=5)
+    shell_process = subprocess.Popen(shell_command, env=env, stdout=shell_log, stderr=shell_log)
+    processes.append(shell_process)
+    wait_for(lambda: subprocess.run(["omarchy-shell", "shell", "ping"], env=env,
+              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0, timeout=15)
+    shell("summon", "turbinebmw.omaview", "{}")
+    wait_for(lambda: observed()["opened"] and observed()["nativeReady"] and pinned_order() == reordered)
+    running_slot = next(d for d in pinned_slots() if d["key"] == "omaview-dock-launch")
+    pointer_move(*center(running_slot))
+    pointer_button("down")
+    pointer_move(center(running_slot)[0] + 1, center(running_slot)[1])
+    pointer_button("up")
+    wait_for(lambda: not observed()["opened"])
+    assert json.loads(pin_file.read_text()) == reordered
+    print("PASS: pin order survives shell restart; a small pointer movement still behaves as a normal click", flush=True)
 except Exception:
     for name in ("shell.log", "hyprland.log"):
         path = base / name
@@ -311,6 +402,8 @@ except Exception:
             print(name + ":\n" + path.read_text()[-6000:])
     raise
 finally:
+    if "pointer" in locals():
+        pointer.close()
     for process in reversed(processes):
         process.terminate()
     for process in processes:
