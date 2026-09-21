@@ -7,10 +7,19 @@
   "license": "MIT",
   "description": "Live Hyprland workspace controls with an app grid, Omarchy menus, and a dock.",
   "kinds": [
-    "menu"
+    "menu",
+    "bar-widget"
   ],
   "keepLoaded": true,
   "entryPoints": {
-    "menu": "Omaview.qml"
+    "menu": "Omaview.qml",
+    "barWidget": "OverviewBarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Omaview",
+    "description": "Opens the Omaview overview",
+    "category": "Compositor",
+    "allowMultiple": false,
+    "defaultSection": "left"
   }
 }
