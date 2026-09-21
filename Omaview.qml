@@ -63,6 +63,7 @@ Item {
     root.hoveredDockKey = ""
     root.setDockHints(false)
     root.clearDockDrag()
+    root.closeAppMenu()
     workspaceAnimation.stop()
     root.stateLoaded = false
     root.nativeReady = false
@@ -84,6 +85,7 @@ Item {
     root.opened = false
     root.setDockHints(false)
     root.clearDockDrag()
+    root.closeAppMenu()
     workspaceAnimation.stop()
     refreshDebounce.stop()
   }
@@ -112,6 +114,9 @@ Item {
       workspace: root.activeWsId, focusedAddress: root.focusedAddress, rounding: root.previewRounding,
       filter: root.filterText, clients: root.clientsByWs, previews: root.previewStatus(), error: root.nativeError,
       dockHintsVisible: root.dockHintsVisible, dockShortcutKeys: root.dockShortcutKeys, dock: root.dockItems,
+      activeMenu: root.activeMenu, rows: root.rows, gridSlots: root.gridSlotGeometry(), hiddenApps: root.hiddenApps,
+      appMenu: { appId: root.contextAppId, actions: root.contextActions,
+        x: appMenu.x, y: appMenu.y, w: appMenu.width, rowHeight: root.contextRowHeight },
       dockSlots: root.dockSlotGeometry(), dockDragging: root.dockDragging, dockDropValid: root.dockDropValid,
       workspaceMotion: { running: workspaceAnimation.running, position: root.workspacePosition,
         duration: root.previewDuration, views: root.workspaceStackStatus() }, wallpapers: root.wallpaperStatus() })
@@ -485,6 +490,7 @@ Item {
   function item(id) { return MenuModel.item(root.items, id) }
 
   function isVisible(entry) {
+    if (entry && entry.kind === "app" && root.isHidden(entry.appId)) return false
     return MenuModel.isVisible(root.items, root.itemOrder, root.whenResults, entry, 0)
   }
 
@@ -532,7 +538,15 @@ Item {
     var query = root.filterText.trim()
     var i, entry
 
-    if (query) {
+    if (root.activeMenu === root.hiddenMenuId) {
+      for (i = 0; i < root.itemOrder.length; i++) {
+        entry = root.item(root.itemOrder[i])
+        if (!entry || entry.kind !== "app" || !root.isHidden(entry.appId)) continue
+        if (query && !MenuModel.matchesQuery(entry, query, true)) continue
+        out.push(MenuModel.displayRow(root.items, root.itemOrder, root.checkedResults, entry, "", 0, "app"))
+      }
+      out.sort(function(a, b) { return a.label.localeCompare(b.label) })
+    } else if (query) {
       for (i = 0; i < root.itemOrder.length; i++) {
         entry = root.item(root.itemOrder[i])
         if (!entry || entry.id === "apps") continue
@@ -555,6 +569,8 @@ Item {
       }
       apps.sort(function(a, b) { return a.label.localeCompare(b.label) })
       out = out.concat(apps)
+      out.push({ itemId: root.hiddenMenuId, kind: "menu", icon: "󰈉", iconFont: "",
+        appIcon: "", appId: "", label: "Hidden", target: root.hiddenMenuId, detail: "", action: "" })
     } else {
       for (i = 0; i < root.itemOrder.length; i++) {
         entry = root.item(root.itemOrder[i])
@@ -570,6 +586,7 @@ Item {
 
   function setFilter(next) {
     if (next === root.filterText) return
+    root.closeAppMenu()
     root.filterText = next
     if (next.trim()) root.loadProvidersForSearch()
     root.rebuildDisplay()
@@ -577,7 +594,8 @@ Item {
 
   function setActiveMenu(id, pushHistory) {
     var entry = root.item(id)
-    if (!entry || id === "apps") id = "root"
+    root.closeAppMenu()
+    if ((!entry && id !== root.hiddenMenuId) || id === "apps") id = "root"
     if (pushHistory && id !== root.activeMenu) root.navStack = root.navStack.concat([root.activeMenu])
     root.activeMenu = id
     root.filterText = ""
@@ -779,6 +797,85 @@ Item {
     onLoaded: { root.userMenuItems = MenuModel.parseMenuJsonc(text()); root.rebuildItemsFromSources() }
     onLoadFailed: { root.userMenuItems = []; root.rebuildItemsFromSources() }
     onFileChanged: reload()
+  }
+
+  // ------------------------------------------ app visibility / context menu
+
+  readonly property string hiddenMenuId: "__omaview_hidden"
+  property var hiddenApps: []
+  onHiddenAppsChanged: root.rebuildDisplay()
+
+  function isHidden(appId) { return root.hiddenApps.indexOf(appId) >= 0 }
+
+  function setAppHidden(appId, hidden) {
+    if (!appId || root.isHidden(appId) === hidden) return
+    var next = root.hiddenApps.slice()
+    if (hidden) next.push(appId)
+    else next.splice(next.indexOf(appId), 1)
+    root.hiddenApps = next
+    hiddenFile.setText(JSON.stringify(next, null, 2) + "\n")
+  }
+
+  FileView {
+    id: hiddenFile
+    path: root.configHome + "/omarchy/omaview-hidden.json"
+    printErrors: false
+    atomicWrites: true
+    onLoaded: {
+      try {
+        var parsed = JSON.parse(text())
+        if (Array.isArray(parsed)) root.hiddenApps = parsed.map(String)
+      } catch (e) { }
+    }
+    onLoadFailed: root.hiddenApps = []
+  }
+
+  property string contextAppId: ""
+  property var contextActions: []
+  property int contextIndex: 0
+  property point contextPoint: Qt.point(0, 0)
+  readonly property int contextRowHeight: Style.space(38)
+
+  function closeAppMenu() {
+    root.contextAppId = ""
+    root.contextActions = []
+  }
+
+  function openAppMenu(appId, source, point) {
+    if (!appId) return
+    var actions = []
+    if (source === "hidden") actions.push({ label: "Unhide app", action: "unhide" })
+    else {
+      actions.push({ label: root.isPinned(appId) ? "Unpin from dock" : "Pin to dock", action: "pin" })
+      if (source === "launcher") actions.push({ label: "Hide app", action: "hide" })
+    }
+    root.contextPoint = point
+    root.contextIndex = 0
+    root.contextActions = actions
+    root.contextAppId = appId
+    keyCatcher.forceActiveFocus()
+  }
+
+  function activateAppMenu(index) {
+    if (index < 0 || index >= root.contextActions.length) return
+    var appId = root.contextAppId
+    var action = root.contextActions[index].action
+    root.closeAppMenu()
+    if (action === "pin") root.togglePin(appId)
+    else root.setAppHidden(appId, action === "hide")
+  }
+
+  function gridSlotGeometry() {
+    var result = []
+    for (var i = 0; i < grid.count; i++) {
+      var tile = grid.itemAtIndex(i)
+      if (!tile) continue
+      var point = tile.mapToItem(keyCatcher, 0, 0)
+      if (point.y < grid.y || point.y + tile.height > grid.y + grid.height) continue
+      result.push({ itemId: tile.modelData.itemId, appId: tile.modelData.appId,
+        x: point.x, y: point.y, w: tile.width, h: tile.height })
+    }
+    return result
   }
 
   // ------------------------------------------------------------------ dock
@@ -1116,6 +1213,15 @@ Item {
       Keys.onPressed: function(event) {
         var ctrl = (event.modifiers & Qt.ControlModifier) !== 0
         root.setDockHints(ctrl || event.key === Qt.Key_Control)
+        if (root.contextAppId) {
+          if (event.key === Qt.Key_Escape) root.closeAppMenu()
+          else if (event.key === Qt.Key_Up || event.key === Qt.Key_Down) {
+            var delta = event.key === Qt.Key_Up ? -1 : 1
+            root.contextIndex = (root.contextIndex + delta + root.contextActions.length) % root.contextActions.length
+          } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) root.activateAppMenu(root.contextIndex)
+          event.accepted = true
+          return
+        }
         if (event.key === Qt.Key_Escape && root.dockPressedItem) {
           root.cancelDockDrag()
           event.accepted = true
@@ -1278,7 +1384,7 @@ Item {
           Text {
             id: backLabel
             anchors.centerIn: parent
-            text: "‹  " + MenuModel.pathFor(root.items, root.activeMenu)
+            text: "‹  " + (root.activeMenu === root.hiddenMenuId ? "Hidden" : MenuModel.pathFor(root.items, root.activeMenu))
             color: Color.menu.text
             font.family: Style.font.family
             font.pixelSize: Style.font.body
@@ -1437,7 +1543,8 @@ Item {
             onPositionChanged: grid.currentIndex = tile.index
             onClicked: function(mouse) {
               if (mouse.button === Qt.RightButton) {
-                if (tile.isApp) root.togglePin(tile.modelData.appId)
+                if (tile.isApp) root.openAppMenu(tile.modelData.appId,
+                  root.activeMenu === root.hiddenMenuId ? "hidden" : "launcher", mapToItem(keyCatcher, mouse.x, mouse.y))
               } else {
                 root.activateIndex(tile.index)
               }
@@ -1449,7 +1556,7 @@ Item {
           visible: root.rows.length === 0
           anchors.horizontalCenter: parent.horizontalCenter
           y: Style.space(30)
-          text: root.filterText ? "No matches" : "Nothing here"
+          text: root.filterText ? "No matches" : (root.activeMenu === root.hiddenMenuId ? "No hidden apps" : "Nothing here")
           color: Color.muted
           font.family: Style.font.family
           font.pixelSize: Style.font.body
@@ -1615,7 +1722,8 @@ Item {
                   }
                   onClicked: function(mouse) {
                     if (root.dockDragging || root.dockDragCanceled) return
-                    if (mouse.button === Qt.RightButton) root.togglePin(dockSlot.modelData.appId)
+                    if (mouse.button === Qt.RightButton) root.openAppMenu(dockSlot.modelData.appId,
+                      "dock", mapToItem(keyCatcher, mouse.x, mouse.y))
                     else root.activateDockItem(dockSlot.modelData, mouse.button === Qt.MiddleButton)
                   }
                 }
@@ -1647,6 +1755,67 @@ Item {
           scale: 1.12
           opacity: root.dockDropValid ? 1 : 0.6
           z: 20
+        }
+      }
+      // Keep the menu in this layer so native keyboard routing and pointer
+      // dismissal work without a separate Wayland popup or focus grab.
+      Item {
+        anchors.fill: parent
+        z: 100
+        visible: root.contextAppId !== ""
+
+        MouseArea {
+          anchors.fill: parent
+          acceptedButtons: Qt.AllButtons
+          onClicked: root.closeAppMenu()
+          onWheel: function(wheel) { wheel.accepted = true }
+        }
+
+        Rectangle {
+          id: appMenu
+          x: Math.max(Style.space(8), Math.min(root.contextPoint.x, parent.width - width - Style.space(8)))
+          y: Math.max(Style.space(8), Math.min(root.contextPoint.y, parent.height - height - Style.space(8)))
+          width: Style.space(210)
+          height: menuActions.height + Style.space(8)
+          radius: root.radius
+          color: Color.menu.background
+          border.width: 1
+          border.color: Color.accent
+
+          Column {
+            id: menuActions
+            anchors.centerIn: parent
+            width: parent.width - Style.space(8)
+
+            Repeater {
+              model: root.contextActions
+              delegate: Rectangle {
+                required property var modelData
+                required property int index
+                width: menuActions.width
+                height: root.contextRowHeight
+                radius: Math.max(0, root.radius - Style.space(4))
+                color: root.contextIndex === index ? Color.menu.selectedBackground : "transparent"
+
+                Text {
+                  anchors.fill: parent
+                  anchors.leftMargin: Style.space(12)
+                  verticalAlignment: Text.AlignVCenter
+                  text: modelData.label
+                  color: root.contextIndex === index ? Color.menu.selectedText : Color.menu.text
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.body
+                }
+
+                MouseArea {
+                  anchors.fill: parent
+                  hoverEnabled: true
+                  onEntered: root.contextIndex = parent.index
+                  onClicked: root.activateAppMenu(parent.index)
+                }
+              }
+            }
+          }
         }
       }
     }
