@@ -38,8 +38,9 @@ session to unload the native companion. If you added the Super+Space binding
 above, remove that binding and restore your previous one before reloading
 Hyprland. The plugin does not modify Hyprland configuration during install.
 
-Omarchy removes the plugin checkout. Your dock pins remain in
-`~/.config/omarchy/omaview-pinned.json` (or under `XDG_CONFIG_HOME`), and
+Omarchy removes the plugin checkout. Your dock pins and hidden-app settings remain in
+`~/.config/omarchy/omaview-pinned.json` and `omaview-hidden.json`
+(or under `XDG_CONFIG_HOME`), and
 compiled companions remain in `~/.cache/omaview/` (or under `XDG_CACHE_HOME`).
 You may delete those files after the session restarts if you no longer need
 them.
@@ -70,18 +71,26 @@ Type to search apps and Omarchy menu entries together. Use the arrow keys and
 
 ![Browsing Omarchy menus in Omaview](docs/omarchy-menus.gif)
 
+Right-click an app in the launcher to open a menu with **Pin to dock** (or
+**Unpin from dock**) and **Hide app**. The **Hidden** tile at the end of the grid
+opens your hidden apps; right-click one and choose **Unhide app** to restore it.
+Hidden apps stay out of the main grid and normal search. Hiding an app leaves
+its dock pin and running windows alone.
+
 The dock holds pinned apps followed by anything else that's running.
 
 - **Click** to launch an app or focus its windows; click again to cycle through them.
 - **Middle-click** to open a new instance.
-- **Right-click** to pin or unpin. You can also pin apps from the grid.
+- **Right-click** to open a menu with **Pin to dock** or **Unpin from dock**.
 - **Drag** pinned icons to reorder them. Press Esc or drop outside the pinned
   section to cancel.
 - Hold **Ctrl** to show letter shortcuts, then press **Ctrl+A**, **Ctrl+B**, etc.
   to switch to that app and close the overview.
 
 Pins are saved in `~/.config/omarchy/omaview-pinned.json`
-(or under `XDG_CONFIG_HOME` if set).
+(or under `XDG_CONFIG_HOME` if set). Hidden apps are saved alongside pins in
+`omaview-hidden.json`. Context menus support arrow keys and Enter; Esc or a
+click outside dismisses them.
 
 ![Using and reordering the Omaview dock](docs/dock.gif)
 

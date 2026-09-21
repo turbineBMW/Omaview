@@ -53,7 +53,8 @@ It verifies the first-open native build from an empty cache, navigation in
 scrolling and dwindle layouts, actual preview pixels for offscreen windows,
 capture visibility, search after focus changes, geometry updates,
 workspace switching, close/reopen, Ctrl+letter dock focus/launch actions, and
-pointer-driven pin reordering, cancellation, and persistence across shell restarts.
+pointer-driven pin reordering, cancellation, launcher/dock context menus,
+hiding and unhiding apps, search exclusion, and persistence across shell restarts.
 Workspace animation checks sample intermediate positions in both directions
 and reverse a transition while Hyprland's active workspace changes immediately.
 Pixel checks verify rounded and square window/wallpaper corners after a config

@@ -167,6 +167,7 @@ try:
     installed = Path.home() / ".config/omarchy/plugins/turbinebmw.omaview"
     assert (installed / "Navigation.js").is_file()
     run("omarchy", "plugin", "validate", str(installed))
+    wait_for(lambda: ipc("ping") == "ok", timeout=15)
     run("wtype", "-M", "logo", "-k", "space", "-m", "logo")
     wait_for(lambda: observed()["opened"] and observed()["nativeReady"] and observed()["clients"], timeout=30)
     assert len(list((Path.home() / ".cache/omaview").rglob("omaview.so"))) == 1
@@ -494,6 +495,72 @@ try:
     assert json.loads(pin_file.read_text()) == reordered
     print("PASS: Escape and dropping outside the pinned section cancel; Ctrl badges follow the new order", flush=True)
 
+    def click(slot, button=272):
+        pointer_move(*center(slot))
+        pointer.button(True, button)
+        pointer.button(False, button)
+        time.sleep(.1)
+
+    def menu_action(action):
+        menu = observed()["appMenu"]
+        index = next(i for i, row in enumerate(menu["actions"]) if row["action"] == action)
+        pointer_move(menu["x"] + menu["w"] / 2, menu["y"] + 4 + menu["rowHeight"] * (index + .5))
+        pointer_button("down")
+        pointer_button("up")
+        wait_for(lambda: not observed()["appMenu"]["appId"])
+
+    test_app = "omaview-dock-two"
+    slot = next(d for d in pinned_slots() if d["key"] == test_app)
+    click(slot, 273)
+    wait_for(lambda: observed()["appMenu"]["appId"] == test_app)
+    assert pinned_order() == reordered, "Right-click must not immediately change pins"
+    assert [a["label"] for a in observed()["appMenu"]["actions"]] == ["Unpin from dock"]
+    run("wtype", "-k", "Escape")
+    assert not observed()["appMenu"]["appId"] and observed()["opened"]
+    click(slot, 273)
+    menu_action("pin")
+    wait_for(lambda: test_app not in pinned_order())
+
+    run("wtype", "Omaview Dock two")
+    wait_for(lambda: len(observed()["gridSlots"]) == 1)
+    tile = observed()["gridSlots"][0]
+    assert tile["appId"] == test_app
+    click(tile, 273)
+    assert [a["label"] for a in observed()["appMenu"]["actions"]] == ["Pin to dock", "Hide app"]
+    assert test_app not in pinned_order()
+    # Clicking outside dismisses without activating the tile or closing the overview.
+    click({"x": 1, "y": 1, "w": 1, "h": 1})
+    assert observed()["opened"] and not observed()["appMenu"]["appId"]
+    click(tile, 273)
+    menu_action("pin")
+    reordered = [app for app in reordered if app != test_app] + [test_app]
+    wait_for(lambda: pinned_order() == reordered)
+    click(tile, 273)
+    menu_action("hide")
+    hidden_file = pin_file.with_name("omaview-hidden.json")
+    wait_for(lambda: json.loads(hidden_file.read_text()) == [test_app])
+    assert observed()["rows"] == [], "Hidden apps must be excluded from normal search"
+    assert test_app in pinned_order(), "Hiding a launcher tile must preserve dock pins"
+    run("wtype", "-k", "Escape")
+    assert observed()["rows"][-1]["label"] == "Hidden"
+    assert all(r["appId"] != test_app for r in observed()["rows"])
+    # Keyboard navigation reaches the final tile even when the grid must scroll.
+    pointer_move(1, 1)
+    for direction in ("Down", "Right"):
+        for _ in range(len(observed()["rows"])):
+            run("wtype", "-k", direction)
+    wait_for(lambda: any(t["itemId"] == "__omaview_hidden" for t in observed()["gridSlots"]))
+    time.sleep(.3)  # Let keyboard scrolling settle before clicking.
+    hidden_tile = next(t for t in observed()["gridSlots"] if t["itemId"] == "__omaview_hidden")
+    click(hidden_tile)
+    wait_for(lambda: observed()["activeMenu"] == "__omaview_hidden")
+    assert [r["appId"] for r in observed()["rows"]] == [test_app]
+    click(observed()["gridSlots"][0], 273)
+    assert [a["label"] for a in observed()["appMenu"]["actions"]] == ["Unhide app"]
+    run("wtype", "-k", "Escape")
+    assert observed()["activeMenu"] == "__omaview_hidden"
+    print("PASS: launcher/dock context menus, dismissal, explicit pin actions, hiding, search exclusion, and Hidden submenu", flush=True)
+
     # Restart only this test shell to prove the saved order is loaded from disk.
     shell_process.terminate()
     shell_process.wait(timeout=5)
@@ -501,8 +568,33 @@ try:
     processes.append(shell_process)
     wait_for(lambda: subprocess.run(["omarchy-shell", "shell", "ping"], env=env,
               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0, timeout=15)
+    wait_for(lambda: ipc("ping") == "ok", timeout=15)
     shell("summon", "turbinebmw.omaview", "{}")
     wait_for(lambda: observed()["opened"] and observed()["nativeReady"] and pinned_order() == reordered)
+    assert observed()["hiddenApps"] == [test_app]
+    run("wtype", "Omaview Dock two")
+    assert observed()["rows"] == []
+    run("wtype", "-k", "Escape")
+    pointer_move(1, 1)
+    for direction in ("Down", "Right"):
+        for _ in range(len(observed()["rows"])):
+            run("wtype", "-k", direction)
+    wait_for(lambda: any(t["itemId"] == "__omaview_hidden" for t in observed()["gridSlots"]))
+    time.sleep(.3)  # Let keyboard scrolling settle before clicking.
+    hidden_tile = next(t for t in observed()["gridSlots"] if t["itemId"] == "__omaview_hidden")
+    click(hidden_tile)
+    wait_for(lambda: observed()["activeMenu"] == "__omaview_hidden")
+    click(observed()["gridSlots"][0], 273)
+    # Enter activates the context menu rather than launching the hidden app.
+    run("wtype", "-k", "Return")
+    wait_for(lambda: observed()["hiddenApps"] == [] and observed()["rows"] == [])
+    wait_for(lambda: json.loads(hidden_file.read_text()) == [])
+    assert observed()["opened"]
+    run("wtype", "-k", "Escape")
+    run("wtype", "Omaview Dock two")
+    wait_for(lambda: [r["appId"] for r in observed()["rows"]] == [test_app])
+    run("wtype", "-k", "Escape")
+    print("PASS: hidden apps survive shell restart; Unhide restores launcher and search without launching", flush=True)
     running_slot = next(d for d in pinned_slots() if d["key"] == "omaview-dock-launch")
     pointer_move(*center(running_slot))
     pointer_button("down")

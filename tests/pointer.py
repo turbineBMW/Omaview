@@ -68,8 +68,8 @@ class VirtualPointer:
         self.send(5, 1, self.timestamp(), round(x), round(y), self.width, self.height)
         self.frame()
 
-    def button(self, pressed):
-        self.send(5, 2, self.timestamp(), 272, int(pressed))
+    def button(self, pressed, button=272):
+        self.send(5, 2, self.timestamp(), button, int(pressed))
         self.frame()
 
     def frame(self):
