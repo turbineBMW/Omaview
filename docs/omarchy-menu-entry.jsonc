@@ -1,0 +1,9 @@
+{
+  "setup.plugin.omaview-bar": {
+    "icon": "󰌆",
+    "label": "Omaview Bar Button",
+    "when": "omarchy-shell shell listShellConfig | jq -e 'any(.bar.layout[][]; .id == \"turbinebmw.omaview\")'",
+    "checked": "omarchy-shell shell listShellConfig | jq -e 'any(.bar.layout[][]; .id == \"turbinebmw.omaview\" and .showButton != false)'",
+    "action": "if omarchy-shell shell listShellConfig | jq -e 'any(.bar.layout[][]; .id == \"turbinebmw.omaview\" and .showButton != false)' >/dev/null; then omarchy bar set turbinebmw.omaview showButton false --json; else omarchy bar set turbinebmw.omaview showButton true --json; fi"
+  }
+}

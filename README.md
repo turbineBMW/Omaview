@@ -14,6 +14,25 @@ versions haven't been validated.
 omarchy plugin add https://github.com/turbineBMW/Omaview --enable
 ```
 
+The plugin includes a status bar button styled like the Omarchy menu button.
+Left-click it to toggle the overview; right-click it to open a terminal. To
+show it beside the Omarchy menu button, add `{ "id": "turbinebmw.omaview" }`
+after `{ "id": "omarchy.menu" }` in `bar.layout.left` of
+`~/.config/omarchy/shell.json`, or run:
+
+```bash
+omarchy plugin enable turbinebmw.omaview --section left --after omarchy.menu
+```
+
+### Omarchy menu toggle
+
+Add the entry in [docs/omarchy-menu-entry.jsonc](docs/omarchy-menu-entry.jsonc)
+to `~/.config/omarchy/extensions/omarchy-menu.jsonc`. It appears under
+**Setup → Plugins** with a checkmark when the bar button is visible. It uses
+Omarchy's menu `when`, `checked`, and `action` fields and the native
+`omarchy bar set` command. Hiding the button leaves the overview available
+through its keyboard shortcut.
+
 To open it with **Super+Space**, replace your existing binding in
 `~/.config/hypr/bindings.lua`:
 
