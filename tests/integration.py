@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -127,7 +128,17 @@ try:
     launcher_wrapper = launcher_bin / "uwsm-app"
     launcher_wrapper.write_text('#!/bin/sh\nif [ "$1" = "--" ]; then shift; fi\nexec "$@"\n')
     launcher_wrapper.chmod(0o755)
+    shadow_marker = base / "shadow-build-tool-ran"
+    for shadowed in ("g++", "pkg-config"):
+        wrapper = launcher_bin / shadowed
+        wrapper.write_text("#!/bin/sh\nprintf '%s\\n' " + shadowed + " >> " + str(shadow_marker) + "\nexit 99\n")
+        wrapper.chmod(0o755)
     env["PATH"] = str(launcher_bin) + os.pathsep + env["PATH"]
+    for compiler_variable in (
+        "COMPILER_PATH", "GCC_EXEC_PREFIX", "CPATH", "CPLUS_INCLUDE_PATH",
+        "LIBRARY_PATH", "PKG_CONFIG_PATH", "PKG_CONFIG_LIBDIR",
+    ):
+        env[compiler_variable] = str(launcher_bin)
     applications = Path.home() / ".local/share/applications"
     applications.mkdir(parents=True)
     (applications / "omaview-dock-launch.desktop").write_text(
@@ -170,7 +181,13 @@ try:
     wait_for(lambda: ipc("ping") == "ok", timeout=15)
     run("wtype", "-M", "logo", "-k", "space", "-m", "logo")
     wait_for(lambda: observed()["opened"] and observed()["nativeReady"] and observed()["clients"], timeout=30)
-    assert len(list((Path.home() / ".cache/omaview").rglob("omaview.so"))) == 1
+    cache_root = Path.home() / ".cache/omaview"
+    artifacts = list(cache_root.rglob("omaview-*.so"))
+    assert len(artifacts) == 1
+    assert stat.S_IMODE(cache_root.stat().st_mode) == 0o700
+    assert stat.S_IMODE(artifacts[0].stat().st_mode) == 0o400
+    assert len(list(cache_root.rglob("binding.json"))) == 1
+    assert not shadow_marker.exists(), "Native bootstrap used a PATH-shadowed build tool"
     wait_for(matches_focus)
     print("PASS: actual plugin install, enable, keybind, and automatic build with an empty home/cache", flush=True)
 
@@ -370,7 +387,7 @@ try:
     assert compositor()["activewindow"]["address"] == selected
     assert not observed()["opened"]
     assert all(not p["capturing"] for p in observed()["previews"])
-    binary = next((Path.home() / ".cache/omaview").rglob("omaview.so"))
+    binary = next((Path.home() / ".cache/omaview").rglob("omaview-*.so"))
     mtime = binary.stat().st_mtime_ns
     shell("summon", "turbinebmw.omaview", "{}")
     wait_for(lambda: observed()["nativeReady"] and observed()["opened"])

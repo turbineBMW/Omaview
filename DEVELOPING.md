@@ -5,16 +5,26 @@ See the [README](README.md) for installation and controls.
 ## Native companion
 
 `native/omaview.cpp` is a small Hyprland plugin loaded on the first open. The
-launcher `native/ensure-native.sh` compiles it against installed headers and
-caches the binary under `~/.cache/omaview/<Hyprland ABI>/<source hash>/`.
-It needs `g++`, `pkg-config`, `jq`, `flock`, and the development headers supplied
-by the installed Hyprland and its dependencies. Omarchy includes `base-devel`,
-`jq`, and `hyprland`; a trimmed installation missing those prerequisites gets an
-error identifying what is missing. No package installation or elevated access
-is attempted. The ABI guard rejects mismatched
-headers. An incompatible Hyprland upgrade can require updating this companion;
-an ordinary compatible rebuild happens automatically on the next session's first
-open. A load failure produces a notification and leaves the overview closed.
+isolated launcher `native/ensure-native.py` compiles it against installed headers
+and caches the binary under `~/.cache/omaview/<Hyprland ABI>/<build-input hash>/`.
+It needs Python, `g++`, `pkg-config`, `hyprctl`, and the development headers
+supplied by the installed Hyprland and its dependencies. Omarchy includes these
+through its standard system packages; a trimmed installation missing a
+prerequisite gets an error identifying what is missing. No package installation
+or elevated access is attempted.
+
+Quickshell starts the launcher with a cleared, allowlisted environment. The
+launcher accepts only immutable system tools at fixed `/usr/bin` paths, uses the system
+pkg-config directories, retains no-follow descriptors for an owner-only cache,
+builds through an exclusively created file, and loads the verified artifact by
+its open descriptor. Its cache identity covers the complete native source,
+Hyprland ABI, build recipe, compiler and Python binaries, pkg-config binary and
+metadata, package versions, and exact compiler flags. A manifest binds that
+identity to the final artifact hash and is checked on every reuse. The ABI guard
+also rejects mismatched headers. An incompatible Hyprland upgrade can require
+updating this companion; an ordinary compatible rebuild happens automatically
+on the next session's first open. A load failure produces a notification and
+leaves the overview closed.
 
 The plugin uses event listeners and a custom state query, without replacing
 Hyprland functions or modifying its layout. It routes keyboard input only while
@@ -40,6 +50,16 @@ For details, alternatives, source references and limitations, see
 [NATIVE-OVERVIEW.md](NATIVE-OVERVIEW.md).
 
 ## Integration checks
+
+Run the focused trust-boundary checks first:
+
+```bash
+python3 -I -S tests/security.py
+```
+
+They verify the cleared subprocess environment, fixed system tools, symlink
+rejection, artifact-integrity checks, and bounded QML collectors without loading
+a Hyprland plugin.
 
 From the repository root, run (opens a separate, temporary Hyprland window):
 

@@ -148,7 +148,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     listeners.emplace_back(Event::bus()->m_events.monitor.removed.listen(
         [](PHLMONITOR monitor) { captureListeners.erase(monitor->m_id); }));
 
-    return {"omaview", "Native focus, geometry and overview captures for the Omaview shell", "turbinebmw", "1.1.2"};
+    return {"omaview", "Native focus, geometry and overview captures for the Omaview shell", "turbinebmw", "1.1.3"};
 }
 
 APICALL EXPORT void PLUGIN_EXIT() {

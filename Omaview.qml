@@ -92,16 +92,29 @@ Item {
 
   property bool nativeReady: false
   property string nativeError: ""
+  function nativeBootstrapEnvironment() {
+    var allowed = ({})
+    var cacheHome = Quickshell.env("XDG_CACHE_HOME")
+    var runtimeDirectory = Quickshell.env("XDG_RUNTIME_DIR")
+    var instance = Quickshell.env("HYPRLAND_INSTANCE_SIGNATURE")
+    if (cacheHome) allowed.XDG_CACHE_HOME = cacheHome
+    if (runtimeDirectory) allowed.XDG_RUNTIME_DIR = runtimeDirectory
+    if (instance) allowed.HYPRLAND_INSTANCE_SIGNATURE = instance
+    return allowed
+  }
   Process {
     id: nativeLoader
-    command: ["bash", decodeURIComponent(Qt.resolvedUrl("native/ensure-native.sh").toString().replace(/^file:\/\//, ""))]
+    clearEnvironment: true
+    environment: root.nativeBootstrapEnvironment()
+    command: ["/usr/bin/python3", "-I", "-S",
+      decodeURIComponent(Qt.resolvedUrl("native/ensure-native.py").toString().replace(/^file:\/\//, ""))]
     stderr: StdioCollector { onStreamFinished: root.nativeError = text.trim() }
     onExited: function(code) {
       if (!root.opened) return
       if (code !== 0) {
         console.warn("Omaview native companion:", root.nativeError)
         root.close()
-        Quickshell.execDetached(["notify-send", "Omaview could not open", root.nativeError || "Native Hyprland companion failed to load."])
+        Quickshell.execDetached(["/usr/bin/notify-send", "Omaview could not open", root.nativeError || "Native Hyprland companion failed to load."])
         return
       }
       root.nativeReady = true
@@ -369,7 +382,7 @@ Item {
   Process {
     id: stateProc
     property bool rerun: false
-    command: ["hyprctl", "omaview-state"]
+    command: ["/usr/bin/hyprctl", "omaview-state"]
     stdout: StdioCollector {
       onStreamFinished: root.applyState(text)
     }
@@ -446,7 +459,7 @@ Item {
 
   Process {
     id: wallpaperProc
-    command: ["readlink", "-f", (Quickshell.env("XDG_STATE_HOME") || (Quickshell.env("HOME") + "/.local/state")) + "/omarchy/current/background"]
+    command: ["/usr/bin/readlink", "-f", (Quickshell.env("XDG_STATE_HOME") || (Quickshell.env("HOME") + "/.local/state")) + "/omarchy/current/background"]
     stdout: StdioCollector {
       onStreamFinished: root.wallpaperPath = text.trim()
     }
@@ -471,6 +484,22 @@ Item {
   property var whenResults: ({})
   property var checkedResults: ({})
   property bool guardsPending: false
+  // SplitParser emits strings, so this caps retained UTF-16 code units. The
+  // process is killed before an oversized stream can be merged into the model.
+  readonly property int collectorCharacterLimit: 262144
+
+  function appendBoundedOutput(target, data, description) {
+    if (target.outputOverflow) return
+    var chunk = String(data)
+    if (chunk.length > root.collectorCharacterLimit - target.collected.length) {
+      target.outputOverflow = true
+      target.collected = ""
+      console.warn("Omaview " + description + " exceeded the output limit")
+      target.signal(9)
+      return
+    }
+    target.collected += chunk
+  }
 
   // Same providers the Omarchy menu knows: label\tvalue\tcurrent per line.
   readonly property var providers: ({
@@ -643,7 +672,8 @@ Item {
     providerProc.providerKey = entry.provider
     providerProc.revision = root.providerRevision
     providerProc.collected = ""
-    providerProc.command = ["bash", "-lc", spec.script]
+    providerProc.outputOverflow = false
+    providerProc.command = ["/usr/bin/bash", "-lc", spec.script]
     providerProc.running = true
   }
 
@@ -705,11 +735,14 @@ Item {
     property string providerKey: ""
     property int revision: 0
     property string collected: ""
+    property bool outputOverflow: false
     stdout: SplitParser {
-      onRead: function(data) { providerProc.collected += data + "\n" }
+      // Raw chunks prevent SplitParser from retaining an unlimited partial line.
+      splitMarker: ""
+      onRead: function(data) { root.appendBoundedOutput(providerProc, data, "provider") }
     }
     onExited: {
-      if (providerProc.revision === root.providerRevision)
+      if (!providerProc.outputOverflow && providerProc.revision === root.providerRevision)
         root.mergeProviderRows(providerProc.collected, providerProc.menuId, providerProc.providerKey)
       Qt.callLater(function() {
         while (!providerProc.running && root.providerQueue.length > 0) {
@@ -731,18 +764,21 @@ Item {
     var script = MenuModel.guardScript(root.items)
     if (!script) { root.whenResults = ({}); root.checkedResults = ({}); return }
     guardProc.collected = ""
-    guardProc.command = ["bash", "-lc", script]
+    guardProc.outputOverflow = false
+    guardProc.command = ["/usr/bin/bash", "-lc", script]
     guardProc.running = true
   }
 
   Process {
     id: guardProc
     property string collected: ""
+    property bool outputOverflow: false
     stdout: SplitParser {
-      onRead: function(data) { guardProc.collected += data + "\n" }
+      splitMarker: ""
+      onRead: function(data) { root.appendBoundedOutput(guardProc, data, "guard") }
     }
     onExited: function(exitCode, exitStatus) {
-      if (exitCode === 0 && exitStatus === 0) {
+      if (!guardProc.outputOverflow && exitCode === 0 && exitStatus === 0) {
         var nextWhen = ({})
         var nextChecked = ({})
         var lines = guardProc.collected.split("\n")
@@ -762,7 +798,8 @@ Item {
         root.checkedResults = nextChecked
         if (root.opened) root.rebuildDisplay()
       }
-      if (root.guardsPending) Qt.callLater(function() { root.evaluateGuards() })
+      if (guardProc.outputOverflow) root.guardsPending = false
+      else if (root.guardsPending) Qt.callLater(function() { root.evaluateGuards() })
     }
   }
 

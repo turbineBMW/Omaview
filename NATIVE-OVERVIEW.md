@@ -155,10 +155,11 @@ or a full native renderer. This change does not add those gestures. It fixes
 the existing overview's control model while retaining apps, menus and the dock.
 
 The companion uses Hyprland's internal C++ types. Builds are cached by ABI and
-source hash, and the entry point validates the running ABI. Future Hyprland
-internal API changes can require source adjustments. Failed builds or loads
-leave the overview closed with an error notification instead of reviving the
-old simulated focus model.
+a complete identity of the source and trusted build inputs; the cached artifact
+hash is verified before its retained file descriptor is loaded. The entry point
+also validates the running ABI. Future Hyprland internal API changes can require
+source adjustments. Failed builds or loads leave the overview closed with an
+error notification instead of reviving the old simulated focus model.
 
 ## Validation
 
