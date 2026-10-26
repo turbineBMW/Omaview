@@ -70,8 +70,15 @@ With Hyprland's scrolling layout, the current workspace sits in the center,
 with neighboring workspaces peeking in above and below. Other layouts get a
 compact strip of workspace thumbnails.
 
-- Click a window to focus it; double-click to jump into it. Middle-click closes it.
+- Click or tap a window to focus it and close the overview. Middle-click closes it.
 - Click a workspace to switch to it without leaving the overview.
+- On a touchscreen, swipe with one finger over the workspaces. In the scrolling
+  layout, swipe up/down to switch workspaces and left/right to scroll through
+  windows. In other layouts, swipe left/right to switch workspaces. Longer
+  swipes move further.
+- Scroll over the workspaces to switch between them. Scrolling sideways moves
+  through windows in the scrolling layout. When windows run off the screen, click
+  the arrow chips on the edges of the current workspace to scroll to them.
 - **Ctrl+Up/Down** switches workspaces. Moving past the last occupied one gives
   you an empty workspace.
 - **Ctrl+Left/Right** moves focus between windows using the current layout.

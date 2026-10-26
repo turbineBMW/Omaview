@@ -77,6 +77,22 @@ Item {
     return false
   }
 
+  // The nearest tiled window lying past the monitor's left / right edge. In
+  // the scrolling layout, focusing it scrolls the layout one step that way.
+  function offscreenNeighbor(side) {
+    var best = null
+    for (var i = 0; i < clients.length; i++) {
+      var c = clients[i]
+      if (c.floating === true) continue
+      if (side < 0 ? c.x >= 0 : c.x + c.w <= monW) continue
+      if (!best || (side < 0 ? c.x + c.w > best.x + best.w : c.x < best.x)) best = c
+    }
+    return best ? best.address : ""
+  }
+  readonly property bool scrollChips: !clipToMonitor && isActive
+  readonly property string offscreenLeft: scrollChips ? offscreenNeighbor(-1) : ""
+  readonly property string offscreenRight: scrollChips ? offscreenNeighbor(1) : ""
+
   height: wallH
   clip: true
 
@@ -254,12 +270,9 @@ Item {
           anchors.fill: parent
           hoverEnabled: true
           acceptedButtons: Qt.LeftButton | Qt.MiddleButton
-          onDoubleClicked: function(mouse) {
-            if (mouse.button === Qt.LeftButton) view.windowAccepted(win.address)
-          }
           onClicked: function(mouse) {
             if (mouse.button === Qt.MiddleButton) view.windowCloseRequested(win.address)
-            else view.windowActivated(win.address)
+            else view.windowAccepted(win.address)
           }
         }
       }
@@ -282,6 +295,45 @@ Item {
         color: view.isActive ? Color.accent : Color.foreground
         font.family: Style.font.family
         font.pixelSize: Style.font.caption
+      }
+    }
+  }
+
+  // Circle chips that scroll an overflowing scrolling layout. They sit on the
+  // wallpaper's edges, outside the masked layer so they never fade.
+  Repeater {
+    model: [-1, 1]
+
+    delegate: Rectangle {
+      id: chip
+      required property int modelData
+      readonly property string target: modelData < 0 ? view.offscreenLeft : view.offscreenRight
+      visible: target !== ""
+      z: 4
+      width: Style.space(32)
+      height: width
+      radius: width / 2
+      x: modelData < 0 ? view.originX + Style.space(8) : view.originX + view.wallW - width - Style.space(8)
+      anchors.verticalCenter: parent.verticalCenter
+      color: chipArea.containsMouse ? Util.alpha(Color.accent, 0.9) : Util.alpha(Color.background, 0.85)
+      border.width: Math.max(1, Style.space(1))
+      border.color: Util.alpha(Color.accent, chipArea.containsMouse ? 1 : 0.5)
+
+      Text {
+        anchors.centerIn: parent
+        anchors.verticalCenterOffset: -Style.space(2)
+        text: chip.modelData < 0 ? "‹" : "›"
+        color: chipArea.containsMouse ? Color.background : Color.foreground
+        font.family: Style.font.family
+        font.pixelSize: Style.space(24)
+      }
+
+      MouseArea {
+        id: chipArea
+        anchors.fill: parent
+        hoverEnabled: true
+        cursorShape: Qt.PointingHandCursor
+        onClicked: view.windowActivated(chip.target)
       }
     }
   }

@@ -1357,7 +1357,6 @@ Item {
               animationEasing: root.previewEasing
               iconFor: root.iconForClass
               onWorkspaceActivated: function(id) { root.focusWorkspace(id, true) }
-              onWindowActivated: function(address) { root.focusWindow(address, true) }
               onWindowAccepted: function(address) { root.focusWindow(address, false) }
               onWindowCloseRequested: function(address) { root.closeWindow(address) }
             }
@@ -1395,6 +1394,97 @@ Item {
             onWindowActivated: function(address) { root.focusWindow(address, true) }
             onWindowAccepted: function(address) { root.focusWindow(address, false) }
             onWindowCloseRequested: function(address) { root.closeWindow(address) }
+          }
+        }
+
+        // One-finger swipes. The handler grabs passively on press, so taps
+        // still reach the previews; past the drag threshold it takes the
+        // touch point and the tap is cancelled. The axis locks on the first
+        // movement, and every swipeStep of travel dispatches one step, so a
+        // longer swipe moves further. Content follows the finger: swiping up
+        // or left reveals the next workspace or the column to the right.
+        Item {
+          anchors.fill: parent
+          z: 10
+
+          DragHandler {
+            id: swipe
+            target: null
+            acceptedDevices: PointerDevice.TouchScreen
+            property string axis: ""
+            property real consumed: 0
+            readonly property real swipeStep: Style.space(90)
+
+            onActiveChanged: {
+              axis = ""
+              consumed = 0
+            }
+            onActiveTranslationChanged: {
+              if (!active) return
+              var t = activeTranslation
+              if (!axis) axis = Math.abs(t.x) >= Math.abs(t.y) ? "x" : "y"
+              var travel = axis === "x" ? -t.x : -t.y
+              while (Math.abs(travel - consumed) >= swipeStep) {
+                var direction = travel > consumed ? 1 : -1
+                consumed += direction * swipeStep
+                if (axis === "y" && root.scrollingMode) root.stepWorkspace(direction)
+                else if (axis === "x" && root.scrollingMode) root.focusDirection(direction > 0 ? "r" : "l")
+                else if (axis === "x") root.stepWorkspace(direction)
+              }
+            }
+          }
+
+          // Mouse wheels and touchpads. Deltas accumulate so one notch (120)
+          // is one step and a touchpad needs a deliberate scroll; reversing
+          // direction or pausing starts over, and touchpad momentum is
+          // ignored so a flick stops where the fingers lift. Vertical
+          // scrolling switches workspaces; horizontal scrolling moves through
+          // columns in the scrolling layout and through workspaces in the
+          // strip.
+          MouseArea {
+            id: wheelArea
+            anchors.fill: parent
+            acceptedButtons: Qt.NoButton
+            property real accX: 0
+            property real accY: 0
+            readonly property real notch: 120
+
+            Timer {
+              id: wheelIdle
+              interval: 300
+              onTriggered: {
+                wheelArea.accX = 0
+                wheelArea.accY = 0
+              }
+            }
+
+            onWheel: function(event) {
+              event.accepted = true
+              if (event.phase === Qt.ScrollMomentum) return
+              wheelIdle.restart()
+              var dx = event.angleDelta.x
+              var dy = event.angleDelta.y
+              if (Math.abs(dy) >= Math.abs(dx)) {
+                if (dy * accY < 0) accY = 0
+                accY += dy
+                accX = 0
+                while (Math.abs(accY) >= notch) {
+                  var down = accY < 0
+                  accY += down ? notch : -notch
+                  root.stepWorkspace(down ? 1 : -1)
+                }
+              } else {
+                if (dx * accX < 0) accX = 0
+                accX += dx
+                accY = 0
+                while (Math.abs(accX) >= notch) {
+                  var right = accX < 0
+                  accX += right ? notch : -notch
+                  if (root.scrollingMode) root.focusDirection(right ? "r" : "l")
+                  else root.stepWorkspace(right ? 1 : -1)
+                }
+              }
+            }
           }
         }
       }
