@@ -15,7 +15,10 @@ omarchy plugin add https://github.com/turbineBMW/Omaview --enable
 ```
 
 The plugin includes a status bar button styled like the Omarchy menu button.
-Left-click it to toggle the overview; right-click it to open a terminal. To
+Left-click it to toggle the overview; right-click it to open a terminal.
+Scroll over it to switch workspaces: down for the next one, up for the
+previous one. Scrolling past the last occupied workspace gives you an empty
+one, the same as in the overview. To
 show it beside the Omarchy menu button, add `{ "id": "turbinebmw.omaview" }`
 after `{ "id": "omarchy.menu" }` in `bar.layout.left` of
 `~/.config/omarchy/shell.json`, or run:
