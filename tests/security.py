@@ -112,7 +112,7 @@ class NativeBootstrapSecurityTests(unittest.TestCase):
         self.assertIn('["/usr/bin/python3", "-I", "-S"', qml)
         self.assertIn("collectorCharacterLimit: 262144", qml)
         self.assertIn("target.signal(9)", qml)
-        self.assertEqual(qml.count('splitMarker: ""'), 2)
+        self.assertEqual(qml.count('splitMarker: ""'), 3)
         self.assertNotIn("collected += data", qml)
 
 

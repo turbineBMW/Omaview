@@ -52,6 +52,8 @@ Item {
     else Util.execDetached("uwsm-app -- gtk-launch " + Util.shellQuote(appId + ".desktop"))
   }
 
+  property bool iconsRefreshed: false
+
   function open(payloadJson) {
     var payload = ({})
     try { payload = JSON.parse(payloadJson || "{}") } catch (e) { payload = ({}) }
@@ -60,23 +62,28 @@ Item {
     root.filterText = ""
     root.navStack = []
     root.activeMenu = "root"
-    root.hoveredDockKey = ""
+    root.iconPickAppId = ""
     root.setDockHints(false)
     root.clearDockDrag()
     root.closeAppMenu()
     workspaceAnimation.stop()
     root.stateLoaded = false
-    root.nativeReady = false
     root.nativeError = ""
+    root.nativeRecovered = false
     root.modePending = true
     Style.refresh()
-    if (root.appLibrary) root.appLibrary.refreshIcons()
+    // The app library rescans icons itself whenever desktop entries change;
+    // one explicit refresh per shell session covers icons placed after start.
+    if (root.appLibrary && !root.iconsRefreshed) { root.iconsRefreshed = true; root.appLibrary.refreshIcons() }
     root.evaluateGuards()
     root.mergeAppRows()
     if (payload.menu) root.setActiveMenu(MenuModel.resolveRoute(root.items, root.itemOrder, payload.menu), false)
-    root.rebuildDisplay()
+    root.rebuildDisplay(true)
     root.opened = true
-    nativeLoader.running = true
+    // The companion stays loaded between opens; the loader only runs when
+    // it has not been verified in this session or Hyprland reported it gone.
+    if (root.nativeReady) root.refreshState()
+    else nativeLoader.running = true
   }
 
   // Hyprland already owns the selected window and layout. Closing only
@@ -91,6 +98,7 @@ Item {
   }
 
   property bool nativeReady: false
+  property bool nativeRecovered: false
   property string nativeError: ""
   function nativeBootstrapEnvironment() {
     var allowed = ({})
@@ -122,15 +130,32 @@ Item {
     }
   }
 
+  // A state query that fails while the companion was assumed loaded means
+  // the shell missed its unload; verify and reload it once, then give up.
+  function recoverNative() {
+    if (!root.opened || root.stateLoaded) return
+    if (root.nativeRecovered) {
+      root.close()
+      Quickshell.execDetached(["/usr/bin/notify-send", "Omaview could not open", "The native Hyprland companion is not answering."])
+      return
+    }
+    root.nativeRecovered = true
+    root.nativeReady = false
+    nativeLoader.running = true
+  }
+
   function status(arg) {
-    return JSON.stringify({ opened: root.opened, nativeReady: root.nativeReady,
+    return JSON.stringify({ opened: root.opened, nativeReady: root.nativeReady, panelVisible: panel.visible,
       workspace: root.activeWsId, focusedAddress: root.focusedAddress, rounding: root.previewRounding,
       filter: root.filterText, clients: root.clientsByWs, previews: root.previewStatus(), error: root.nativeError,
       dockHintsVisible: root.dockHintsVisible, dockShortcutKeys: root.dockShortcutKeys, dock: root.dockItems,
       activeMenu: root.activeMenu, rows: root.rows, gridSlots: root.gridSlotGeometry(), hiddenApps: root.hiddenApps,
       appMenu: { appId: root.contextAppId, actions: root.contextActions,
-        x: appMenu.x, y: appMenu.y, w: appMenu.width, rowHeight: root.contextRowHeight },
-      dockSlots: root.dockSlotGeometry(), dockDragging: root.dockDragging, dockDropValid: root.dockDropValid,
+        x: appMenu.card.x, y: appMenu.card.y, w: appMenu.card.width, rowHeight: root.contextRowHeight },
+      dockSlots: overviewDock.slotGeometry(), dockDragging: overviewDock.dragging, dockDropValid: overviewDock.dropValid,
+      dockScale: overviewDock.scale, desktopDock: root.desktopDockEnabled, desktopDocks: root.desktopDockStatus(),
+      settings: root.effectiveSettings(), theme: root.themeDockStatus(),
+      iconPick: root.iconPickAppId, iconOverrides: root.iconOverrides,
       workspaceMotion: { running: workspaceAnimation.running, position: root.workspacePosition,
         duration: root.previewDuration, views: root.workspaceStackStatus() }, wallpapers: root.wallpaperStatus() })
   }
@@ -163,6 +188,178 @@ Item {
 
   function ping() { return "ok" }
 
+  // ------------------------------------------------------------- settings
+
+  // ~/.config/omarchy/omaview.json, all keys optional:
+  //   desktopDock          bool    show the dock on the desktop (false)
+  //   desktopDockMargin    number  gap below the desktop dock, in style units (14)
+  //   desktopDockIconSize  number  desktop dock icon size, in style units (35)
+  //   desktopDockBorder    bool    outline around the desktop dock (true)
+  //   dockBackground       "theme" | "bar" | "app"  color behind both docks ("theme":
+  //                        the theme's [omaview] dock-background, else the bar's)
+  //   dockOpacity          0..1    opacity of that color (0.85)
+  property var settings: ({})
+  readonly property var settingLimits: ({
+    desktopDockMargin: { fallback: 14, min: 0, max: 200 },
+    desktopDockIconSize: { fallback: 35, min: 16, max: 96 },
+    dockOpacity: { fallback: 0.85, min: 0, max: 1 }
+  })
+  readonly property bool desktopDockEnabled: root.settings.desktopDock === true
+  readonly property real desktopDockMargin: Style.space(root.settingNumber("desktopDockMargin"))
+  readonly property real desktopDockIconSize: Style.space(root.settingNumber("desktopDockIconSize"))
+  readonly property bool desktopDockBorder: root.settings.desktopDockBorder !== false
+  readonly property var dockBackgroundModes: ["theme", "bar", "app"]
+  readonly property string dockBackground: root.dockBackgroundModes.indexOf(root.settings.dockBackground) >= 0 ? root.settings.dockBackground : "theme"
+  readonly property real dockOpacity: root.settingNumber("dockOpacity")
+
+  // Themes override the dock's colors through an [omaview] section of the
+  // shell's theme values: a theme ships themes/<name>/shell.omaview.toml and
+  // omarchy-theme-set folds it into the staged shell.toml, or the user puts
+  // the section in ~/.config/omarchy/shell.toml. Keys, each with an -alpha
+  // companion: dock-background, dock-border, desktop-dock-background,
+  // desktop-dock-border (the desktop keys fall back to the dock ones).
+  // Values are hex colors, palette roles (background, foreground, accent,
+  // muted, urgent) or another shell.toml key. The background keys apply while
+  // omaview.json's dockBackground is "theme" (its default); the border keys
+  // always apply.
+  function themeColor(keys, fallback) {
+    var values = Color.shellValues
+    for (var i = 0; i < keys.length; i++) {
+      var raw = values["omaview." + keys[i]]
+      if (typeof raw === "string" && raw.length > 0) return Color.flatColor(raw, fallback)
+    }
+    return null
+  }
+
+  function themeAlpha(keys, fallback) {
+    var values = Color.shellValues
+    for (var i = 0; i < keys.length; i++) {
+      var number = Number(values["omaview." + keys[i] + "-alpha"])
+      if (typeof values["omaview." + keys[i] + "-alpha"] === "string" && isFinite(number)) return Util.clampAlpha(number)
+    }
+    return fallback
+  }
+
+  readonly property color settingBackgroundColor: root.dockBackground === "app" ? Color.background : Color.bar.background
+  readonly property bool themeBackground: root.dockBackground === "theme"
+  readonly property color dockBackgroundColor: {
+    var themed = root.themeBackground ? root.themeColor(["dock-background"], Color.background) : null
+    return themed !== null ? themed : (root.themeBackground ? Color.bar.background : root.settingBackgroundColor)
+  }
+  readonly property real dockBackgroundAlpha: root.themeBackground ? root.themeAlpha(["dock-background"], root.dockOpacity) : root.dockOpacity
+  readonly property color dockBorderColor: {
+    var themed = root.themeColor(["dock-border"], Color.foreground)
+    return Util.alpha(themed !== null ? themed : Color.foreground, root.themeAlpha(["dock-border"], 0.18))
+  }
+  readonly property color desktopDockBackgroundColor: {
+    var themed = root.themeBackground ? root.themeColor(["desktop-dock-background", "dock-background"], Color.background) : null
+    return themed !== null ? themed : (root.themeBackground ? Color.bar.background : root.settingBackgroundColor)
+  }
+  readonly property real desktopDockBackgroundAlpha: root.themeBackground
+    ? root.themeAlpha(["desktop-dock-background", "dock-background"], root.dockOpacity) : root.dockOpacity
+  readonly property color desktopDockBorderColor: {
+    var themed = root.themeColor(["desktop-dock-border", "dock-border"], Color.foreground)
+    return Util.alpha(themed !== null ? themed : Color.foreground, root.themeAlpha(["desktop-dock-border", "dock-border"], 0.18))
+  }
+
+  function themeDockStatus() {
+    var out = ({})
+    var values = Color.shellValues
+    for (var key in values) if (key.indexOf("omaview.") === 0) out[key] = values[key]
+    return { keys: out, dockBackground: String(root.dockBackgroundColor), dockBackgroundAlpha: root.dockBackgroundAlpha,
+      dockBorder: String(root.dockBorderColor), desktopDockBackground: String(root.desktopDockBackgroundColor),
+      desktopDockBackgroundAlpha: root.desktopDockBackgroundAlpha, desktopDockBorder: String(root.desktopDockBorderColor) }
+  }
+
+  function settingNumber(key) {
+    var limit = root.settingLimits[key]
+    var value = Number(root.settings[key])
+    if (!isFinite(value)) return limit.fallback
+    return Math.max(limit.min, Math.min(limit.max, value))
+  }
+
+  function applySettings(raw) {
+    var parsed = ({})
+    try { parsed = JSON.parse(raw) } catch (e) { parsed = ({}) }
+    root.settings = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : ({})
+  }
+
+  function updateSettings(patch) {
+    var next = ({})
+    for (var key in root.settings) next[key] = root.settings[key]
+    for (var changed in patch) next[changed] = patch[changed]
+    root.settings = next
+    // Writes are atomic and asynchronous; a second one while the first is in
+    // flight would be dropped, so a burst of changes lands as one write.
+    settingsWrite.restart()
+  }
+
+  Timer {
+    id: settingsWrite
+    interval: 50
+    onTriggered: {
+      settingsFile.setText(JSON.stringify(root.settings, null, 2) + "\n")
+    }
+  }
+
+  function setDesktopDock(enabled) {
+    root.updateSettings({ desktopDock: enabled === true })
+  }
+
+  // omarchy-shell shell call turbinebmw.omaview setting 'desktopDockMargin=20'
+  // Returns the key's effective value; a bare key only reads it.
+  function setting(arg) {
+    var text = String(arg || "").trim()
+    var at = text.indexOf("=")
+    var key = (at >= 0 ? text.substring(0, at) : text).trim()
+    var known = ["desktopDock", "desktopDockMargin", "desktopDockIconSize", "desktopDockBorder", "dockBackground", "dockOpacity"]
+    if (known.indexOf(key) < 0) return "unknown setting: " + key
+    if (at >= 0) {
+      var raw = text.substring(at + 1).trim()
+      var value
+      if (key === "dockBackground") value = root.dockBackgroundModes.indexOf(raw) >= 0 ? raw : "theme"
+      else if (key === "desktopDock" || key === "desktopDockBorder") value = ["on", "true", "1", "yes"].indexOf(raw.toLowerCase()) >= 0
+      else {
+        value = Number(raw)
+        if (!isFinite(value)) return "not a number: " + raw
+        var limit = root.settingLimits[key]
+        value = Math.max(limit.min, Math.min(limit.max, value))
+      }
+      var patch = ({})
+      patch[key] = value
+      root.updateSettings(patch)
+    }
+    return JSON.stringify(root.effectiveSettings()[key])
+  }
+
+  function effectiveSettings() {
+    return { desktopDock: root.desktopDockEnabled, desktopDockMargin: root.settingNumber("desktopDockMargin"),
+      desktopDockIconSize: root.settingNumber("desktopDockIconSize"), desktopDockBorder: root.desktopDockBorder,
+      dockBackground: root.dockBackground, dockOpacity: root.dockOpacity }
+  }
+
+  // omarchy-shell shell call turbinebmw.omaview desktopDock on|off|toggle
+  function desktopDock(arg) {
+    var value = String(arg || "").trim().toLowerCase()
+    if (value === "on" || value === "true" || value === "1") root.setDesktopDock(true)
+    else if (value === "off" || value === "false" || value === "0") root.setDesktopDock(false)
+    else if (value === "toggle") root.setDesktopDock(!root.desktopDockEnabled)
+    return root.desktopDockEnabled ? "on" : "off"
+  }
+
+  FileView {
+    id: settingsFile
+    path: root.configHome + "/omarchy/omaview.json"
+    watchChanges: true
+    printErrors: false
+    atomicWrites: true
+    onLoaded: root.applySettings(text())
+    onLoadFailed: root.settings = ({})
+    // A change on disk while a write is pending is ours; keep the newer state.
+    onFileChanged: if (!settingsWrite.running) reload()
+    onSaveFailed: console.warn("Omaview could not save omaview.json")
+  }
+
   // ------------------------------------------------------- compositor state
 
   property var monitor: ({ name: "", x: 0, y: 0, w: 1920, h: 1080 })
@@ -171,7 +368,6 @@ Item {
   property string activeLayout: "scrolling"   // tiledLayout of the active workspace
   property var workspaces: []        // [{id, name}] on the focused monitor, by id
   property var clientsByWs: ({})     // wsId -> [client] in monitor-local coords
-  property var allClients: []
 
   readonly property int activeWsIndex: {
     for (var i = 0; i < workspaces.length; i++) if (workspaces[i].id === activeWsId) return i
@@ -296,10 +492,11 @@ Item {
 
   function applyState(raw) {
     if (!root.opened) return
-    // Skip identical observations so captures and dock delegates stay alive.
+    // Skip identical observations so captures stay alive.
     if (raw === root.lastState && root.stateLoaded && !root.modePending) return
     var data
-    try { data = JSON.parse(raw) } catch (e) { return }
+    try { data = JSON.parse(raw) } catch (e) { root.recoverNative(); return }
+    if (!data || typeof data !== "object" || !data.monitors) { root.recoverNative(); return }
 
     root.lastState = raw
     root.focusedAddress = String((data.activewindow || {}).address || "")
@@ -343,7 +540,7 @@ Item {
     }
 
     var byWs = ({})
-    var flat = []
+    var history = []
     var clients = data.clients || []
     for (var k = 0; k < clients.length; k++) {
       var c = clients[k]
@@ -361,15 +558,17 @@ Item {
         focusOrder: c.focusHistoryID,
         wsId: c.workspace ? c.workspace.id : 0
       }
-      // Dock data has no geometry: resizing a window must not recreate icons.
-      flat.push({ address: client.address, cls: client.cls, title: client.title,
-                  focused: client.focused, focusOrder: client.focusOrder, wsId: client.wsId })
+      history.push(client)
       if (client.wsId <= 0 || c.monitor !== mon.id) continue
       if (!byWs[client.wsId]) byWs[client.wsId] = []
       byWs[client.wsId].push(client)
     }
     root.clientsByWs = byWs
-    if (JSON.stringify(flat) !== JSON.stringify(root.allClients)) root.allClients = flat
+    // Hyprland's focus history is authoritative while the overview is open;
+    // the dock keeps following activewindowv2 events after it closes.
+    history.sort(function(a, b) { return a.focusOrder - b.focusOrder })
+    var ordered = history.map(function(entry) { return root.normalizeAddress(entry.address) })
+    if (JSON.stringify(ordered) !== JSON.stringify(root.focusHistory)) root.focusHistory = ordered
 
     var screens = Quickshell.screens
     for (var s = 0; s < screens.length; s++) {
@@ -386,7 +585,8 @@ Item {
     stdout: StdioCollector {
       onStreamFinished: root.applyState(text)
     }
-    onExited: {
+    onExited: function(code) {
+      if (code !== 0) root.recoverNative()
       if (rerun) { rerun = false; Qt.callLater(root.refreshState) }
     }
   }
@@ -397,17 +597,39 @@ Item {
     onTriggered: root.refreshState()
   }
 
+  // Window focus order, most recent first, as normalized addresses. It is
+  // kept while the overview is closed so the desktop dock cycles windows the
+  // same way the overview does.
+  property var focusHistory: []
+
+  function noteFocus(address) {
+    var key = root.normalizeAddress(address)
+    if (!key) return
+    var next = root.focusHistory.filter(function(entry) { return entry !== key })
+    next.unshift(key)
+    if (next.length > 64) next.length = 64
+    root.focusHistory = next
+  }
+
+  function forgetWindow(address) {
+    var key = root.normalizeAddress(address)
+    if (root.focusHistory.indexOf(key) < 0) return
+    root.focusHistory = root.focusHistory.filter(function(entry) { return entry !== key })
+  }
+
   Connections {
     target: Hyprland
-    enabled: root.opened
     function onRawEvent(event) {
       var n = event.name
-      if (n === "configreloaded") Style.refresh()
       if (n === "omaview" && event.data === "unloaded") {
         root.nativeReady = false
         root.close()
         return
       }
+      if (n === "activewindowv2") root.noteFocus(event.data)
+      else if (n === "closewindow") root.forgetWindow(event.data)
+      if (!root.opened) return
+      if (n === "configreloaded") Style.refresh()
       if (n === "omaview" || n === "openwindow" || n === "closewindow" || n === "movewindowv2" || n === "workspacev2"
           || n === "createworkspacev2" || n === "destroyworkspacev2" || n === "changefloatingmode"
           || n === "focusedmonv2" || n === "activewindowv2" || n === "windowtitlev2" || n === "fullscreen"
@@ -478,6 +700,7 @@ Item {
   property var navStack: []
   property string filterText: ""
   property var rows: []
+  property string rowsJson: "[]"
   property var providersLoaded: ({})
   property var providerQueue: []
   property int providerRevision: 0
@@ -562,12 +785,17 @@ Item {
     if (root.opened) root.rebuildDisplay()
   }
 
-  function rebuildDisplay() {
+  // Navigation always resets the grid. Refreshes from guards, providers or
+  // app changes pass no force and are dropped when nothing changed: assigning
+  // an equal array would still rebuild every delegate and reload its icon.
+  function rebuildDisplay(force) {
     var out = []
     var query = root.filterText.trim()
     var i, entry
 
-    if (root.activeMenu === root.hiddenMenuId) {
+    if (root.iconPickAppId) {
+      out = root.iconRows(query)
+    } else if (root.activeMenu === root.hiddenMenuId) {
       for (i = 0; i < root.itemOrder.length; i++) {
         entry = root.item(root.itemOrder[i])
         if (!entry || entry.kind !== "app" || !root.isHidden(entry.appId)) continue
@@ -608,6 +836,9 @@ Item {
       }
     }
 
+    var json = JSON.stringify(out)
+    if (!force && json === root.rowsJson) return
+    root.rowsJson = json
     root.rows = out
     grid.currentIndex = out.length > 0 ? 0 : -1
     grid.positionViewAtBeginning()
@@ -617,8 +848,8 @@ Item {
     if (next === root.filterText) return
     root.closeAppMenu()
     root.filterText = next
-    if (next.trim()) root.loadProvidersForSearch()
-    root.rebuildDisplay()
+    if (next.trim() && !root.iconPickAppId) root.loadProvidersForSearch()
+    root.rebuildDisplay(true)
   }
 
   function setActiveMenu(id, pushHistory) {
@@ -632,10 +863,11 @@ Item {
       root.invalidateVolatileProvider(id)
       root.loadProviderForMenu(id)
     }
-    root.rebuildDisplay()
+    root.rebuildDisplay(true)
   }
 
   function goBack() {
+    if (root.iconPickAppId) { root.endIconPick(); return true }
     if (root.activeMenu === "root") return false
     var stack = root.navStack.slice()
     var previous = stack.length > 0 ? stack.pop() : "root"
@@ -648,7 +880,9 @@ Item {
     if (index < 0 || index >= root.rows.length) return
     var row = root.rows[index]
 
-    if (row.kind === "app") {
+    if (row.kind === "icon") {
+      root.applyIcon(root.iconPickAppId, row.iconValue)
+    } else if (row.kind === "app") {
       root.close()
       root.launchApp(row.appId, row.label)
     } else if (row.kind === "menu" || row.kind === "link") {
@@ -808,11 +1042,14 @@ Item {
     function onAppsChanged() { root.mergeAppRows() }
   }
 
+  // Apps that arrive after a failed pin load (DesktopEntries fills in async),
+  // and class lookups that must follow installed or edited entries.
   Connections {
     target: DesktopEntries.applications
     function onValuesChanged() {
       root.classEntryCache = ({})
       if (!root.appLibrary) root.mergeAppRows()
+      if (root.pinnedLoaded && root.pinned.length === 0 && !pinnedFile.loaded) root.pinned = root.defaultPins()
     }
   }
   onAppLibraryChanged: root.mergeAppRows()
@@ -873,33 +1110,69 @@ Item {
   property point contextPoint: Qt.point(0, 0)
   readonly property int contextRowHeight: Style.space(38)
 
+  // Sources: "launcher" and "hidden" tiles, "dock" icons in the overview,
+  // "desktop" icons on the desktop dock, and "background" for the dock's
+  // padding. The same actions run from either dock.
+  function contextActionsFor(appId, source) {
+    var actions = []
+    if (source === "hidden") {
+      actions.push({ label: "Unhide app", action: "unhide" })
+    } else if (appId && source !== "background") {
+      actions.push({ label: root.isPinned(appId) ? "Unpin from dock" : "Pin to dock", action: "pin" })
+      if (source === "launcher") actions.push({ label: "Hide app", action: "hide" })
+      actions.push({ label: "Change icon…", action: "icon" })
+      if (root.iconOverrides.indexOf(appId) >= 0) actions.push({ label: "Reset icon", action: "resetIcon" })
+    }
+    if (source === "background" || source === "desktopBackground")
+      actions.push({ label: root.desktopDockEnabled ? "Hide dock from desktop" : "Show dock on desktop", action: "desktopDock" })
+    if (source === "desktopBackground") {
+      actions.push({ label: root.desktopDockBorder ? "Hide border" : "Show border", action: "border" })
+      actions.push({ label: "Background: " + root.dockBackground, action: "background" })
+      actions.push({ label: "Larger icons", action: "larger" })
+      actions.push({ label: "Smaller icons", action: "smaller" })
+    }
+    return actions
+  }
+
+  function runContextAction(appId, action) {
+    if (action === "pin") root.togglePin(appId)
+    else if (action === "hide" || action === "unhide") root.setAppHidden(appId, action === "hide")
+    else if (action === "icon") root.beginIconPick(appId)
+    else if (action === "resetIcon") root.applyIcon(appId, "")
+    else if (action === "desktopDock") root.setDesktopDock(!root.desktopDockEnabled)
+    else if (action === "border") root.updateSettings({ desktopDockBorder: !root.desktopDockBorder })
+    else if (action === "background") {
+      var modes = root.dockBackgroundModes
+      root.updateSettings({ dockBackground: modes[(modes.indexOf(root.dockBackground) + 1) % modes.length] })
+    }
+    else if (action === "larger" || action === "smaller") {
+      var limit = root.settingLimits.desktopDockIconSize
+      var size = root.settingNumber("desktopDockIconSize") + (action === "larger" ? 4 : -4)
+      root.updateSettings({ desktopDockIconSize: Math.max(limit.min, Math.min(limit.max, size)) })
+    }
+  }
+
   function closeAppMenu() {
     root.contextAppId = ""
     root.contextActions = []
   }
 
   function openAppMenu(appId, source, point) {
-    if (!appId) return
-    var actions = []
-    if (source === "hidden") actions.push({ label: "Unhide app", action: "unhide" })
-    else {
-      actions.push({ label: root.isPinned(appId) ? "Unpin from dock" : "Pin to dock", action: "pin" })
-      if (source === "launcher") actions.push({ label: "Hide app", action: "hide" })
-    }
+    var actions = root.contextActionsFor(appId, source)
+    if (actions.length === 0) return
     root.contextPoint = point
     root.contextIndex = 0
     root.contextActions = actions
-    root.contextAppId = appId
+    root.contextAppId = appId || "__background"
     keyCatcher.forceActiveFocus()
   }
 
   function activateAppMenu(index) {
     if (index < 0 || index >= root.contextActions.length) return
-    var appId = root.contextAppId
+    var appId = root.contextAppId === "__background" ? "" : root.contextAppId
     var action = root.contextActions[index].action
     root.closeAppMenu()
-    if (action === "pin") root.togglePin(appId)
-    else root.setAppHidden(appId, action === "hide")
+    root.runContextAction(appId, action)
   }
 
   function gridSlotGeometry() {
@@ -915,101 +1188,198 @@ Item {
     return result
   }
 
+  // ------------------------------------------------------------ icon picker
+
+  // "Change icon…" turns the grid into a picker: theme icon names matching
+  // the search, or an image path typed or pasted in. The choice is written
+  // by scripts/set-icon.py into a user-local desktop entry.
+  property string iconPickAppId: ""
+  property string iconPickName: ""
+  property string iconPickCurrent: ""
+  property var iconNames: []
+  property bool iconNamesLoaded: false
+  property var iconOverrides: []
+
+  function iconToolEnvironment() {
+    var allowed = ({})
+    var keys = ["HOME", "XDG_DATA_HOME", "XDG_DATA_DIRS"]
+    for (var i = 0; i < keys.length; i++) {
+      var value = Quickshell.env(keys[i])
+      if (value) allowed[keys[i]] = value
+    }
+    return allowed
+  }
+
+  readonly property string iconToolPath: decodeURIComponent(Qt.resolvedUrl("scripts/set-icon.py").toString().replace(/^file:\/\//, ""))
+
+  function beginIconPick(appId) {
+    if (!appId) return
+    if (!root.opened) root.open("{}")
+    root.closeAppMenu()
+    var entry = DesktopEntries.byId(appId)
+    root.iconPickName = entry ? String(entry.name || appId) : appId
+    root.iconPickCurrent = entry ? String(entry.icon || "") : ""
+    root.iconPickAppId = appId
+    root.filterText = ""
+    root.loadIconNames()
+    root.rebuildDisplay(true)
+  }
+
+  function endIconPick() {
+    root.iconPickAppId = ""
+    root.filterText = ""
+    root.rebuildDisplay(true)
+  }
+
+  function iconRow(value, label) {
+    return { itemId: "icon:" + value, kind: "icon", icon: "", iconFont: "", appIcon: value, appId: "",
+             label: label, target: "", detail: "", action: "", iconValue: value }
+  }
+
+  function iconResolves(name) {
+    return root.iconSource(name) !== root.iconSource("")
+  }
+
+  function iconRows(query) {
+    var out = []
+    var seen = ({})
+    var expanded = query.replace(/^~(?=\/)/, Quickshell.env("HOME"))
+    if (expanded.charAt(0) === "/" && /\.(png|svg|svgz|jpe?g|webp|xpm|ico|bmp)$/i.test(expanded)) {
+      seen[expanded] = true
+      out.push(root.iconRow(expanded, expanded.split("/").pop()))
+    }
+    var lower = query.toLowerCase()
+    if (!lower) {
+      // Without a query, offer the icons of installed apps: borrowing one of
+      // those is the common case for a web app or a terminal program.
+      var entries = root.appEntries()
+      for (var e = 0; e < entries.length; e++) {
+        var icon = String(entries[e].icon || "")
+        if (!icon || seen[icon] || icon.charAt(0) === "/") continue
+        seen[icon] = true
+        out.push(root.iconRow(icon, icon))
+      }
+      out.sort(function(a, b) { return a.label.localeCompare(b.label) })
+      return out
+    }
+    var prefix = [], contains = []
+    for (var i = 0; i < root.iconNames.length && prefix.length + contains.length < 400; i++) {
+      var name = root.iconNames[i]
+      var at = name.toLowerCase().indexOf(lower)
+      if (at < 0) continue
+      if (at === 0) prefix.push(name)
+      else contains.push(name)
+    }
+    var ordered = prefix.concat(contains)
+    for (var k = 0; k < ordered.length && out.length < 150; k++) {
+      if (seen[ordered[k]] || !root.iconResolves(ordered[k])) continue
+      seen[ordered[k]] = true
+      out.push(root.iconRow(ordered[k], ordered[k]))
+    }
+    return out
+  }
+
+  function iconDirectories() {
+    var home = Quickshell.env("HOME")
+    var dirs = [(Quickshell.env("XDG_DATA_HOME") || (home + "/.local/share")) + "/icons", home + "/.icons",
+                home + "/.local/share/flatpak/exports/share/icons", "/var/lib/flatpak/exports/share/icons"]
+    var dataDirs = (Quickshell.env("XDG_DATA_DIRS") || "/usr/local/share:/usr/share").split(":")
+    for (var i = 0; i < dataDirs.length; i++) {
+      if (!dataDirs[i]) continue
+      dirs.push(dataDirs[i] + "/icons")
+      dirs.push(dataDirs[i] + "/pixmaps")
+    }
+    return dirs
+  }
+
+  function loadIconNames() {
+    if (root.iconNamesLoaded || iconNamesProc.running) return
+    var dirs = root.iconDirectories().map(Util.shellQuote).join(" ")
+    iconNamesProc.collected = ""
+    iconNamesProc.outputOverflow = false
+    iconNamesProc.command = ["/usr/bin/bash", "-c",
+      "find " + dirs + " -type f \\( -iname '*.svg' -o -iname '*.svgz' -o -iname '*.png' -o -iname '*.xpm' \\) -printf '%f\\n' 2>/dev/null"
+      + " | sed -E 's/\\.(svgz?|png|xpm)$//I' | sort -u"]
+    iconNamesProc.running = true
+  }
+
+  Process {
+    id: iconNamesProc
+    property string collected: ""
+    property bool outputOverflow: false
+    stdout: SplitParser {
+      splitMarker: ""
+      onRead: function(data) { root.appendBoundedOutput(iconNamesProc, data, "icon list") }
+    }
+    onExited: {
+      if (iconNamesProc.outputOverflow) return
+      root.iconNames = iconNamesProc.collected.split("\n").filter(function(name) { return name.length > 0 })
+      root.iconNamesLoaded = true
+      if (root.opened && root.iconPickAppId) root.rebuildDisplay()
+    }
+  }
+
+  function applyIcon(appId, value) {
+    if (!appId || iconProc.running) return
+    iconProc.appId = appId
+    iconProc.error = ""
+    iconProc.command = value
+      ? ["/usr/bin/python3", "-I", "-S", root.iconToolPath, "set", appId, value]
+      : ["/usr/bin/python3", "-I", "-S", root.iconToolPath, "reset", appId]
+    iconProc.running = true
+    if (root.iconPickAppId === appId) root.endIconPick()
+  }
+
+  Process {
+    id: iconProc
+    property string appId: ""
+    property string error: ""
+    clearEnvironment: true
+    environment: root.iconToolEnvironment()
+    stderr: StdioCollector { onStreamFinished: iconProc.error = text.trim() }
+    onExited: function(code) {
+      if (code !== 0) {
+        console.warn("Omaview icon change:", iconProc.error)
+        Quickshell.execDetached(["/usr/bin/notify-send", "Omaview could not change the icon", iconProc.error || "The desktop entry could not be updated."])
+      }
+      root.listIconOverrides()
+    }
+  }
+
+  function listIconOverrides() {
+    if (iconListProc.running) { iconListProc.rerun = true; return }
+    iconListProc.running = true
+  }
+
+  Process {
+    id: iconListProc
+    property bool rerun: false
+    clearEnvironment: true
+    environment: root.iconToolEnvironment()
+    command: ["/usr/bin/python3", "-I", "-S", root.iconToolPath, "list"]
+    stdout: StdioCollector {
+      onStreamFinished: {
+        var ids = text.split("\n").filter(function(id) { return id.length > 0 })
+        if (JSON.stringify(ids) !== JSON.stringify(root.iconOverrides)) root.iconOverrides = ids
+      }
+    }
+    onExited: {
+      if (rerun) { rerun = false; Qt.callLater(root.listIconOverrides) }
+    }
+  }
+
+  Component.onCompleted: root.listIconOverrides()
+
   // ------------------------------------------------------------------ dock
 
   property string pinnedPath: root.configHome + "/omarchy/omaview-pinned.json"
   property var pinned: []
   property bool pinnedLoaded: false
-  property string hoveredDockKey: ""
   property bool dockHintsVisible: false
   property var dockShortcutKeys: []
-  // Freeze the delegates during a pointer press so a changing window list
-  // cannot destroy the MouseArea that owns the grab.
-  property var dockDisplayItems: []
-  property var dockPressedItem: null
-  property bool dockDragging: false
-  property bool dockDragCanceled: false
-  property point dockDragPoint: Qt.point(0, 0)
-  property bool dockDropValid: false
-  property string dockDropBefore: ""
-  property real dockDropX: 0
-
-  function syncDockItems() {
-    if (!root.dockPressedItem) root.dockDisplayItems = root.dockItems
-  }
-  onDockItemsChanged: root.syncDockItems()
-  Component.onCompleted: root.syncDockItems()
 
   function clearDockDrag() {
-    root.dockDragging = false
-    root.dockDragCanceled = false
-    root.dockDropValid = false
-    root.dockPressedItem = null
-    root.syncDockItems()
-  }
-
-  function cancelDockDrag() {
-    root.dockDragCanceled = true
-    root.dockDragging = false
-    root.dockDropValid = false
-  }
-
-  function dockSlotGeometry() {
-    var result = []
-    for (var i = 0; i < dockIcons.count; i++) {
-      var slot = dockIcons.itemAt(i)
-      if (!slot) continue
-      var point = slot.mapToItem(null, 0, 0)
-      result.push({ key: slot.modelData.key, pinned: slot.modelData.pinned,
-                    x: point.x, y: point.y, w: slot.width, h: slot.height })
-    }
-    return result
-  }
-
-  function updateDockDrag(point) {
-    if (!root.dockPressedItem || root.dockDragCanceled) return
-    root.dockDragging = true
-    root.dockDragPoint = point
-    root.dockDropValid = false
-    root.dockDropBefore = ""
-    var left = 0, right = 0, found = false, targetFound = false
-    for (var i = 0; i < dockIcons.count; i++) {
-      var slot = dockIcons.itemAt(i)
-      if (!slot || !slot.modelData.pinned) continue
-      var position = slot.mapToItem(dock, 0, 0)
-      if (!found) { left = position.x; found = true }
-      right = position.x + slot.width
-      if (!targetFound && slot.modelData.key !== root.dockPressedItem.key && point.x < position.x + slot.width / 2) {
-        root.dockDropBefore = slot.modelData.appId
-        root.dockDropX = position.x - dockRow.spacing / 2
-        targetFound = true
-      }
-    }
-    if (!targetFound) root.dockDropX = right + dockRow.spacing / 2
-    var margin = Style.space(8)
-    root.dockDropValid = found && point.x >= left - margin && point.x <= right + margin
-      && point.y >= -margin && point.y <= dock.height + margin
-  }
-
-  function finishDockDrag() {
-    if (root.dockDragging && root.dockDropValid && !root.dockDragCanceled && root.dockPressedItem) {
-      var next = root.pinned.slice()
-      var from = next.indexOf(root.dockPressedItem.appId)
-      if (from >= 0) {
-        next.splice(from, 1)
-        var to = root.dockDropBefore ? next.indexOf(root.dockDropBefore) : next.length
-        if (to >= 0) {
-          next.splice(to, 0, root.dockPressedItem.appId)
-          if (JSON.stringify(next) !== JSON.stringify(root.pinned)) {
-            root.pinned = next
-            pinnedFile.setText(JSON.stringify(next, null, 2) + "\n")
-          }
-        }
-      }
-    }
-    // MouseArea emits clicked after released. Keep the drag flag and frozen
-    // delegates until that event finishes so a drop cannot launch the app.
-    Qt.callLater(root.clearDockDrag)
+    overviewDock.clearDrag()
   }
 
   function setDockHints(held) {
@@ -1017,13 +1387,8 @@ Item {
     if (held === root.dockHintsVisible) return
     // Keep letters attached to app identities if windows change while Ctrl
     // is held. A fresh press assigns a-z in the current dock order.
-    root.dockShortcutKeys = held ? root.dockDisplayItems.slice(0, 26).map(function(item) { return item.key }) : []
+    root.dockShortcutKeys = held ? overviewDock.displayItems.slice(0, 26).map(function(item) { return item.key }) : []
     root.dockHintsVisible = held
-  }
-
-  function dockShortcutLetter(key) {
-    var index = root.dockShortcutKeys.indexOf(key)
-    return index >= 0 ? String.fromCharCode(97 + index) : ""
   }
 
   function activateDockShortcut(index) {
@@ -1054,14 +1419,19 @@ Item {
     return root.pinned.indexOf(appId) >= 0
   }
 
+  function savePins(next) {
+    if (JSON.stringify(next) === JSON.stringify(root.pinned)) return
+    root.pinned = next
+    pinnedFile.setText(JSON.stringify(next, null, 2) + "\n")
+  }
+
   function togglePin(appId) {
     if (!appId) return
     var next = root.pinned.slice()
     var at = next.indexOf(appId)
     if (at >= 0) next.splice(at, 1)
     else next.push(appId)
-    root.pinned = next
-    pinnedFile.setText(JSON.stringify(next, null, 2) + "\n")
+    root.savePins(next)
   }
 
   FileView {
@@ -1079,17 +1449,13 @@ Item {
     onLoadFailed: { root.pinned = root.defaultPins(); root.pinnedLoaded = true }
   }
 
-  // Apps that arrive after a failed load (DesktopEntries fills in async).
-  Connections {
-    target: DesktopEntries.applications
-    function onValuesChanged() {
-      if (root.pinnedLoaded && root.pinned.length === 0 && !pinnedFile.loaded) root.pinned = root.defaultPins()
-    }
-  }
-
+  // Pinned apps, then running apps grouped by desktop entry. Running windows
+  // come from Hyprland's toplevel list, which Quickshell keeps current without
+  // any process, so the desktop dock stays live while the overview is closed.
   readonly property var dockItems: {
     var _apps = DesktopEntries.applications.values
     var out = []
+    if (!root.opened && !root.desktopDockEnabled) return out
     var seen = ({})
     var i
 
@@ -1101,21 +1467,26 @@ Item {
     }
 
     var firstRunning = true
-    for (i = 0; i < root.allClients.length; i++) {
-      var c = root.allClients[i]
-      if (!c.cls) continue
-      var entry = root.entryForClass(c.cls)
-      var key = entry ? entry.id : "class:" + c.cls
+    var toplevels = Hyprland.toplevels ? Hyprland.toplevels.values : []
+    for (i = 0; i < toplevels.length; i++) {
+      var toplevel = toplevels[i].wayland
+      if (!toplevel || !toplevel.appId || toplevel.parent) continue
+      var cls = String(toplevel.appId)
+      var entry = root.entryForClass(cls)
+      var key = entry ? entry.id : "class:" + cls
       if (seen[key] === undefined) {
         seen[key] = out.length
         out.push({
-          key: key, appId: entry ? entry.id : "", name: entry ? entry.name : c.cls,
-          icon: entry ? entry.icon : c.cls, pinned: false, windows: [],
+          key: key, appId: entry ? entry.id : "", name: entry ? entry.name : cls,
+          icon: entry ? entry.icon : cls, pinned: false, windows: [],
           sepBefore: firstRunning && out.length > 0
         })
         firstRunning = false
       }
-      out[seen[key]].windows.push(c)
+      var normalized = root.normalizeAddress(toplevels[i].address)
+      var order = root.focusHistory.indexOf(normalized)
+      out[seen[key]].windows.push({ address: "0x" + normalized, cls: cls,
+        focused: toplevel.activated === true, focusOrder: order >= 0 ? order : 1e9 })
     }
     return out
   }
@@ -1171,6 +1542,127 @@ Item {
     root.focusWindow(target.address)
   }
 
+  function scrollWorkspaces(steps) {
+    // Scrolling down moves to the next workspace, matching the bar button.
+    root.dispatch(Navigation.stepWorkspace(steps < 0 ? 1 : -1))
+  }
+
+  // ---------------------------------------------------------- desktop dock
+
+  // The desktop dock is the overview's dock drawn smaller on a Top layer at
+  // the bottom of every screen, reserving its own height. Opening the
+  // overview draws its dock over it and scales up from the same size.
+  readonly property real desktopDockScale: root.desktopDockIconSize / Math.max(1, root.dockIcon)
+  readonly property int desktopPopupRoom: root.contextRowHeight * 5 + Style.space(28)
+
+  function desktopDockStatus() {
+    var result = []
+    for (var i = 0; i < desktopDocks.instances.length; i++) {
+      var window = desktopDocks.instances[i]
+      result.push({ screen: window.screen ? window.screen.name : "", visible: window.visible,
+        exclusiveZone: window.exclusiveZone, slots: window.dock.slotGeometry(),
+        menu: { appId: window.menuAppId, actions: window.menuActions } })
+    }
+    return result
+  }
+
+  Variants {
+    id: desktopDocks
+    model: root.desktopDockEnabled ? Quickshell.screens : []
+
+    delegate: PanelWindow {
+      id: desktopPanel
+      required property var modelData
+      property alias dock: desktopDock
+      screen: modelData
+      visible: root.desktopDockEnabled && root.dockItems.length > 0
+      color: "transparent"
+      WlrLayershell.namespace: "omarchy-omaview-dock"
+      WlrLayershell.layer: WlrLayer.Top
+      WlrLayershell.keyboardFocus: WlrKeyboardFocus.None
+      exclusionMode: ExclusionMode.Normal
+      exclusiveZone: Math.round(dockBody.height + root.desktopDockMargin)
+      anchors { left: true; right: true; bottom: true }
+      implicitHeight: Math.round(dockBody.height + root.desktopDockMargin + root.desktopPopupRoom)
+
+      property string menuAppId: ""
+      property var menuActions: []
+      property point menuPoint: Qt.point(0, 0)
+
+      function openMenu(appId, source, at) {
+        var actions = root.contextActionsFor(appId, source)
+        if (actions.length === 0) return
+        desktopPanel.menuAppId = appId
+        desktopPanel.menuPoint = Qt.point(at.x, dockBody.y)
+        desktopPanel.menuActions = actions
+        desktopMenu.currentIndex = 0
+      }
+
+      function closeMenu() {
+        desktopPanel.menuAppId = ""
+        desktopPanel.menuActions = []
+      }
+
+      // Only the dock and an open menu take input; the room kept above them
+      // for tooltips and menus lets clicks through to the windows below.
+      mask: Region {
+        item: dockBody
+        Region { item: desktopMenu.visible ? desktopMenu.card : null }
+      }
+
+      HyprlandFocusGrab {
+        active: desktopMenu.visible
+        windows: [desktopPanel]
+        onCleared: desktopPanel.closeMenu()
+      }
+
+      Item {
+        id: dockBody
+        width: desktopDock.width * desktopDock.scale
+        height: desktopDock.height * desktopDock.scale
+        x: Math.round((parent.width - width) / 2)
+        y: parent.height - height - root.desktopDockMargin
+
+        Dock {
+          id: desktopDock
+          transformOrigin: Item.TopLeft
+          scale: root.desktopDockScale
+          items: root.dockItems
+          pinnedOrder: root.pinned
+          maxWidth: (desktopPanel.width - root.edge * 2) / root.desktopDockScale
+          iconSize: root.dockIcon
+          iconSource: root.iconSource
+          backgroundColor: root.desktopDockBackgroundColor
+          backgroundOpacity: root.desktopDockBackgroundAlpha
+          borderVisible: root.desktopDockBorder
+          borderColor: root.desktopDockBorderColor
+          onActivated: function(item, forceNew) { root.activateDockItem(item, forceNew) }
+          onContextRequested: function(item, at) { desktopPanel.openMenu(item.appId, item.appId ? "desktop" : "desktopBackground", at) }
+          onBackgroundContextRequested: function(at) { desktopPanel.openMenu("", "desktopBackground", at) }
+          onReordered: function(appIds) { root.savePins(appIds) }
+          onScrolled: function(steps) { root.scrollWorkspaces(steps) }
+        }
+      }
+
+      AppMenu {
+        id: desktopMenu
+        actions: desktopPanel.menuActions
+        at: desktopPanel.menuPoint
+        above: true
+        rowHeight: root.contextRowHeight
+        radius: root.radius
+        onHovered: function(index) { desktopMenu.currentIndex = index }
+        onActivated: function(index) {
+          var action = desktopPanel.menuActions[index].action
+          var appId = desktopPanel.menuAppId
+          desktopPanel.closeMenu()
+          root.runContextAction(appId, action)
+        }
+        onDismissed: desktopPanel.closeMenu()
+      }
+    }
+  }
+
   // ------------------------------------------------------------------ view
 
   readonly property int edge: Style.space(14)
@@ -1191,8 +1683,15 @@ Item {
     id: panel
     visible: root.opened && root.nativeReady && root.stateLoaded
     onVisibleChanged: {
-      if (visible) keyCatcher.forceActiveFocus()
-      else root.setDockHints(false)
+      if (visible) {
+        keyCatcher.forceActiveFocus()
+        // Grow out of the desktop dock when there is one to grow from.
+        if (root.desktopDockEnabled) dockEntry.restart()
+      } else {
+        root.setDockHints(false)
+        dockEntry.stop()
+        overviewDock.scale = 1
+      }
     }
     anchors { top: true; bottom: true; left: true; right: true }
     color: "transparent"
@@ -1247,6 +1746,11 @@ Item {
       anchors.fill: parent
       focus: true
 
+      function pasteFilter() {
+        var clip = String(Quickshell.clipboardText || "").split("\n")[0].trim()
+        if (clip) root.setFilter(root.filterText + clip)
+      }
+
       Keys.onPressed: function(event) {
         var ctrl = (event.modifiers & Qt.ControlModifier) !== 0
         root.setDockHints(ctrl || event.key === Qt.Key_Control)
@@ -1259,12 +1763,20 @@ Item {
           event.accepted = true
           return
         }
-        if (event.key === Qt.Key_Escape && root.dockPressedItem) {
-          root.cancelDockDrag()
+        if (event.key === Qt.Key_Escape && overviewDock.pressedItem) {
+          overviewDock.cancelDrag()
           event.accepted = true
           return
         }
         if (event.key === Qt.Key_Control) {
+          event.accepted = true
+          return
+        }
+        // Shift+Insert pastes anywhere; Ctrl+V does too while picking an
+        // icon, where a pasted image path is the likely intent.
+        if ((event.key === Qt.Key_Insert && (event.modifiers & Qt.ShiftModifier))
+            || (root.iconPickAppId && ctrl && event.key === Qt.Key_V && !(event.modifiers & (Qt.AltModifier | Qt.MetaModifier)))) {
+          keyCatcher.pasteFilter()
           event.accepted = true
           return
         }
@@ -1500,7 +2012,7 @@ Item {
 
         Rectangle {
           id: backButton
-          visible: root.activeMenu !== "root" && !root.filterText
+          visible: (root.activeMenu !== "root" || root.iconPickAppId !== "") && !root.filterText
           anchors.left: parent.left
           anchors.verticalCenter: parent.verticalCenter
           width: backLabel.implicitWidth + Style.space(20)
@@ -1511,7 +2023,8 @@ Item {
           Text {
             id: backLabel
             anchors.centerIn: parent
-            text: "‹  " + (root.activeMenu === root.hiddenMenuId ? "Hidden" : MenuModel.pathFor(root.items, root.activeMenu))
+            text: "‹  " + (root.iconPickAppId ? "Icon for " + root.iconPickName
+              : root.activeMenu === root.hiddenMenuId ? "Hidden" : MenuModel.pathFor(root.items, root.activeMenu))
             color: Color.menu.text
             font.family: Style.font.family
             font.pixelSize: Style.font.body
@@ -1541,7 +2054,7 @@ Item {
             verticalAlignment: Text.AlignVCenter
             horizontalAlignment: Text.AlignHCenter
             elide: Text.ElideLeft
-            text: root.filterText ? root.filterText : "Type to search"
+            text: root.filterText ? root.filterText : (root.iconPickAppId ? "Icon name or image path" : "Type to search")
             color: root.filterText ? Color.menu.text : Color.muted
             font.family: Style.font.family
             font.pixelSize: Style.font.body
@@ -1556,7 +2069,7 @@ Item {
         id: grid
         anchors.top: header.bottom
         anchors.topMargin: Style.space(10)
-        anchors.bottom: dock.top
+        anchors.bottom: overviewDock.top
         anchors.bottomMargin: Style.space(12)
         anchors.horizontalCenter: parent.horizontalCenter
         width: Math.max(1, Math.floor(Math.min(parent.width - root.edge * 4, Style.space(1180)) / root.cellW)) * root.cellW
@@ -1574,6 +2087,7 @@ Item {
           required property int index
           readonly property bool current: GridView.isCurrentItem
           readonly property bool isApp: modelData.kind === "app"
+          readonly property bool isIcon: modelData.kind === "icon"
           readonly property bool isMenu: modelData.kind === "menu" || modelData.kind === "link"
           width: root.cellW
           height: root.cellH
@@ -1595,9 +2109,9 @@ Item {
             y: Style.space(10)
 
             Image {
-              visible: tile.isApp
+              visible: tile.isApp || tile.isIcon
               anchors.fill: parent
-              source: tile.isApp ? root.iconSource(tile.modelData.appIcon) : ""
+              source: tile.isApp || tile.isIcon ? root.iconSource(tile.modelData.appIcon) : ""
               sourceSize.width: 128
               sourceSize.height: 128
               asynchronous: true
@@ -1606,7 +2120,7 @@ Item {
             // Omarchy menu entries have Nerd Font glyphs rather than icons;
             // give them an app-icon-sized plate so they sit in the same grid.
             Rectangle {
-              visible: !tile.isApp
+              visible: !tile.isApp && !tile.isIcon
               anchors.fill: parent
               radius: width * 0.26
               color: tile.isMenu ? Util.alpha(Color.accent, 0.16) : Style.normalFill
@@ -1615,16 +2129,17 @@ Item {
 
               Text {
                 anchors.centerIn: parent
-                text: tile.modelData.icon || (tile.isMenu ? "" : "")
+                text: tile.modelData.icon || (tile.isMenu ? "" : "")
                 color: tile.isMenu ? Color.accent : Color.menu.text
                 font.family: tile.modelData.iconFont || Style.font.menuFamily
                 font.pixelSize: Math.round(root.iconSize * 0.46)
               }
             }
 
-            // Pinned marker
+            // Pinned marker, or the app's current icon while picking one.
             Rectangle {
-              visible: tile.isApp && root.isPinned(tile.modelData.appId)
+              visible: (tile.isApp && root.isPinned(tile.modelData.appId))
+                || (tile.isIcon && tile.modelData.iconValue === root.iconPickCurrent)
               width: Style.space(8)
               height: width
               radius: width / 2
@@ -1683,7 +2198,8 @@ Item {
           visible: root.rows.length === 0
           anchors.horizontalCenter: parent.horizontalCenter
           y: Style.space(30)
-          text: root.filterText ? "No matches" : (root.activeMenu === root.hiddenMenuId ? "No hidden apps" : "Nothing here")
+          text: root.iconPickAppId ? (root.iconNamesLoaded ? "No matching icons" : "Looking for icons…")
+            : root.filterText ? "No matches" : (root.activeMenu === root.hiddenMenuId ? "No hidden apps" : "Nothing here")
           color: Color.muted
           font.family: Style.font.family
           font.pixelSize: Style.font.body
@@ -1691,259 +2207,52 @@ Item {
       }
 
       // ------------------------------------------------------------ dock
-      Rectangle {
-        id: dock
+      Dock {
+        id: overviewDock
         anchors.bottom: parent.bottom
-        anchors.bottomMargin: root.edge
+        // Sit where the desktop dock sits, so the scale-up starts in place.
+        anchors.bottomMargin: root.desktopDockEnabled ? root.desktopDockMargin : root.edge
         anchors.horizontalCenter: parent.horizontalCenter
-        width: Math.min(parent.width - root.edge * 2, dockRow.implicitWidth + Style.space(20))
-        height: root.dockIcon + Style.space(22)
-        radius: Math.max(root.radius, Style.space(12))
-        color: Util.alpha(Color.bar.background, 0.85)
-        border.width: 1
-        border.color: Util.alpha(Color.foreground, 0.18)
-        visible: root.dockItems.length > 0
-
-        MouseArea { anchors.fill: parent; onClicked: {} }
-
-        Row {
-          id: dockRow
-          anchors.centerIn: parent
-          spacing: Style.space(6)
-
-          Repeater {
-            id: dockIcons
-            model: root.dockDisplayItems
-
-            delegate: Row {
-              id: dockSlot
-              required property var modelData
-              readonly property string shortcutLetter: root.dockShortcutLetter(modelData.key)
-              spacing: Style.space(6)
-
-              Rectangle {
-                visible: dockSlot.modelData.sepBefore
-                width: 1
-                height: root.dockIcon * 0.7
-                anchors.verticalCenter: parent.verticalCenter
-                color: Util.alpha(Color.foreground, 0.25)
-              }
-
-              Item {
-                id: dockItem
-                width: root.dockIcon + Style.space(8)
-                height: root.dockIcon + Style.space(10)
-                opacity: root.dockDragging && root.dockPressedItem && root.dockPressedItem.key === dockSlot.modelData.key ? 0.3 : 1
-
-                Rectangle {
-                  anchors.fill: parent
-                  radius: Style.space(10)
-                  color: dockMouse.containsMouse ? Color.menu.selectedBackground : "transparent"
-                }
-
-                Image {
-                  id: dockImage
-                  width: root.dockIcon
-                  height: root.dockIcon
-                  anchors.horizontalCenter: parent.horizontalCenter
-                  y: dockMouse.containsMouse ? 0 : Style.space(2)
-                  scale: dockMouse.containsMouse ? 1.12 : 1.0
-                  source: root.iconSource(dockSlot.modelData.icon)
-                  sourceSize.width: 128
-                  sourceSize.height: 128
-                  asynchronous: true
-                  Behavior on scale { NumberAnimation { duration: 110; easing.type: Easing.OutCubic } }
-                  Behavior on y { NumberAnimation { duration: 110; easing.type: Easing.OutCubic } }
-                }
-
-                Row {
-                  anchors.horizontalCenter: parent.horizontalCenter
-                  anchors.bottom: parent.bottom
-                  spacing: Style.space(3)
-                  Repeater {
-                    model: Math.min(3, dockSlot.modelData.windows.length)
-                    delegate: Rectangle {
-                      required property int index
-                      width: index === 0 ? Style.space(10) : Style.space(4)
-                      height: Style.space(4)
-                      radius: height / 2
-                      color: Color.accent
-                    }
-                  }
-                }
-
-                Rectangle {
-                  visible: root.dockHintsVisible && dockSlot.shortcutLetter !== ""
-                  anchors.top: dockImage.top
-                  anchors.right: dockImage.right
-                  anchors.topMargin: -Style.space(3)
-                  anchors.rightMargin: -Style.space(3)
-                  width: Style.space(20)
-                  height: width
-                  radius: Style.space(6)
-                  color: Color.accent
-                  border.width: Math.max(1, Style.space(1))
-                  border.color: Color.background
-
-                  Text {
-                    anchors.centerIn: parent
-                    text: dockSlot.shortcutLetter
-                    color: Color.background
-                    font.family: Style.font.family
-                    font.pixelSize: Style.font.caption
-                    font.bold: true
-                  }
-                }
-
-                Rectangle {
-                  visible: dockMouse.containsMouse && !root.dockDragging
-                  anchors.bottom: parent.top
-                  anchors.bottomMargin: Style.space(12)
-                  anchors.horizontalCenter: parent.horizontalCenter
-                  width: tipText.implicitWidth + Style.space(14)
-                  height: tipText.implicitHeight + Style.space(8)
-                  radius: height / 2
-                  color: Color.tooltip.background
-                  border.width: 1
-                  border.color: Util.alpha(Color.tooltip.border, 0.4)
-
-                  Text {
-                    id: tipText
-                    anchors.centerIn: parent
-                    text: dockSlot.modelData.name
-                    color: Color.tooltip.text
-                    font.family: Style.font.family
-                    font.pixelSize: Style.font.caption
-                  }
-                }
-
-                MouseArea {
-                  id: dockMouse
-                  anchors.fill: parent
-                  hoverEnabled: true
-                  acceptedButtons: Qt.LeftButton | Qt.MiddleButton | Qt.RightButton
-                  preventStealing: true
-                  cursorShape: root.dockDragging ? Qt.ClosedHandCursor : Qt.PointingHandCursor
-                  property point pressPoint: Qt.point(0, 0)
-
-                  onPressed: function(mouse) {
-                    pressPoint = Qt.point(mouse.x, mouse.y)
-                    if (mouse.button === Qt.LeftButton && dockSlot.modelData.pinned) {
-                      root.dockPressedItem = dockSlot.modelData
-                      root.dockDragCanceled = false
-                    }
-                  }
-                  onPositionChanged: function(mouse) {
-                    if (!(mouse.buttons & Qt.LeftButton) || !root.dockPressedItem
-                        || root.dockPressedItem.key !== dockSlot.modelData.key || root.dockDragCanceled) return
-                    var dx = mouse.x - pressPoint.x, dy = mouse.y - pressPoint.y
-                    if (!root.dockDragging && dx * dx + dy * dy < drag.threshold * drag.threshold) return
-                    root.updateDockDrag(mapToItem(dock, mouse.x, mouse.y))
-                  }
-                  onReleased: function(mouse) {
-                    if (mouse.button === Qt.LeftButton && root.dockPressedItem) root.finishDockDrag()
-                  }
-                  onCanceled: {
-                    root.cancelDockDrag()
-                    Qt.callLater(root.clearDockDrag)
-                  }
-                  onClicked: function(mouse) {
-                    if (root.dockDragging || root.dockDragCanceled) return
-                    if (mouse.button === Qt.RightButton) root.openAppMenu(dockSlot.modelData.appId,
-                      "dock", mapToItem(keyCatcher, mouse.x, mouse.y))
-                    else root.activateDockItem(dockSlot.modelData, mouse.button === Qt.MiddleButton)
-                  }
-                }
-              }
-            }
-          }
-        }
-
-        Rectangle {
-          visible: root.dockDragging && root.dockDropValid
-          x: root.dockDropX - width / 2
-          anchors.verticalCenter: parent.verticalCenter
-          width: Style.space(3)
-          height: root.dockIcon
-          radius: width / 2
-          color: Color.accent
-          z: 10
-        }
-
-        Image {
-          visible: root.dockDragging
-          x: root.dockDragPoint.x - width / 2
-          y: root.dockDragPoint.y - height / 2
-          width: root.dockIcon
-          height: width
-          source: root.dockPressedItem ? root.iconSource(root.dockPressedItem.icon) : ""
-          sourceSize.width: 128
-          sourceSize.height: 128
-          scale: 1.12
-          opacity: root.dockDropValid ? 1 : 0.6
-          z: 20
-        }
+        transformOrigin: Item.Bottom
+        maxWidth: parent.width - root.edge * 2
+        iconSize: root.dockIcon
+        items: root.dockItems
+        pinnedOrder: root.pinned
+        hintsVisible: root.dockHintsVisible
+        shortcutKeys: root.dockShortcutKeys
+        iconSource: root.iconSource
+        backgroundColor: root.dockBackgroundColor
+        backgroundOpacity: root.dockBackgroundAlpha
+        borderColor: root.dockBorderColor
+        onActivated: function(item, forceNew) { root.activateDockItem(item, forceNew) }
+        onContextRequested: function(item, at) { root.openAppMenu(item.appId, item.appId ? "dock" : "background", at) }
+        onBackgroundContextRequested: function(at) { root.openAppMenu("", "background", at) }
+        onReordered: function(appIds) { root.savePins(appIds) }
+        onScrolled: function(steps) { root.scrollWorkspaces(steps) }
       }
+
+      NumberAnimation {
+        id: dockEntry
+        target: overviewDock
+        property: "scale"
+        from: root.desktopDockScale
+        to: 1
+        duration: root.previewDuration
+        easing.type: root.previewEasing
+      }
+
       // Keep the menu in this layer so native keyboard routing and pointer
       // dismissal work without a separate Wayland popup or focus grab.
-      Item {
-        anchors.fill: parent
-        z: 100
-        visible: root.contextAppId !== ""
-
-        MouseArea {
-          anchors.fill: parent
-          acceptedButtons: Qt.AllButtons
-          onClicked: root.closeAppMenu()
-          onWheel: function(wheel) { wheel.accepted = true }
-        }
-
-        Rectangle {
-          id: appMenu
-          x: Math.max(Style.space(8), Math.min(root.contextPoint.x, parent.width - width - Style.space(8)))
-          y: Math.max(Style.space(8), Math.min(root.contextPoint.y, parent.height - height - Style.space(8)))
-          width: Style.space(210)
-          height: menuActions.height + Style.space(8)
-          radius: root.radius
-          color: Color.menu.background
-          border.width: 1
-          border.color: Color.accent
-
-          Column {
-            id: menuActions
-            anchors.centerIn: parent
-            width: parent.width - Style.space(8)
-
-            Repeater {
-              model: root.contextActions
-              delegate: Rectangle {
-                required property var modelData
-                required property int index
-                width: menuActions.width
-                height: root.contextRowHeight
-                radius: Math.max(0, root.radius - Style.space(4))
-                color: root.contextIndex === index ? Color.menu.selectedBackground : "transparent"
-
-                Text {
-                  anchors.fill: parent
-                  anchors.leftMargin: Style.space(12)
-                  verticalAlignment: Text.AlignVCenter
-                  text: modelData.label
-                  color: root.contextIndex === index ? Color.menu.selectedText : Color.menu.text
-                  font.family: Style.font.family
-                  font.pixelSize: Style.font.body
-                }
-
-                MouseArea {
-                  anchors.fill: parent
-                  hoverEnabled: true
-                  onEntered: root.contextIndex = parent.index
-                  onClicked: root.activateAppMenu(parent.index)
-                }
-              }
-            }
-          }
-        }
+      AppMenu {
+        id: appMenu
+        actions: root.contextActions
+        currentIndex: root.contextIndex
+        at: root.contextPoint
+        rowHeight: root.contextRowHeight
+        radius: root.radius
+        onHovered: function(index) { root.contextIndex = index }
+        onActivated: function(index) { root.activateAppMenu(index) }
+        onDismissed: root.closeAppMenu()
       }
     }
   }
