@@ -198,11 +198,15 @@ Item {
   //   dockBackground       "theme" | "bar" | "app"  color behind both docks ("theme":
   //                        the theme's [omaview] dock-background, else the bar's)
   //   dockOpacity          0..1    opacity of that color (0.85)
+  //   dockSpacing          number  gap between dock icons, in style units (6)
+  //   dockPadding          number  space around the dock's icons, in style units (10)
   property var settings: ({})
   readonly property var settingLimits: ({
     desktopDockMargin: { fallback: 14, min: 0, max: 200 },
     desktopDockIconSize: { fallback: 35, min: 16, max: 96 },
-    dockOpacity: { fallback: 0.85, min: 0, max: 1 }
+    dockOpacity: { fallback: 0.85, min: 0, max: 1 },
+    dockSpacing: { fallback: 6, min: 0, max: 40 },
+    dockPadding: { fallback: 10, min: 0, max: 40 }
   })
   readonly property bool desktopDockEnabled: root.settings.desktopDock === true
   readonly property real desktopDockMargin: Style.space(root.settingNumber("desktopDockMargin"))
@@ -211,6 +215,8 @@ Item {
   readonly property var dockBackgroundModes: ["theme", "bar", "app"]
   readonly property string dockBackground: root.dockBackgroundModes.indexOf(root.settings.dockBackground) >= 0 ? root.settings.dockBackground : "theme"
   readonly property real dockOpacity: root.settingNumber("dockOpacity")
+  readonly property real dockSpacing: Style.space(root.settingNumber("dockSpacing"))
+  readonly property real dockPadding: Style.space(root.settingNumber("dockPadding"))
 
   // Themes override the dock's colors through an [omaview] section of the
   // shell's theme values: a theme ships themes/<name>/shell.omaview.toml and
@@ -312,7 +318,8 @@ Item {
     var text = String(arg || "").trim()
     var at = text.indexOf("=")
     var key = (at >= 0 ? text.substring(0, at) : text).trim()
-    var known = ["desktopDock", "desktopDockMargin", "desktopDockIconSize", "desktopDockBorder", "dockBackground", "dockOpacity"]
+    var known = ["desktopDock", "desktopDockMargin", "desktopDockIconSize", "desktopDockBorder", "dockBackground", "dockOpacity",
+      "dockSpacing", "dockPadding"]
     if (known.indexOf(key) < 0) return "unknown setting: " + key
     if (at >= 0) {
       var raw = text.substring(at + 1).trim()
@@ -335,7 +342,8 @@ Item {
   function effectiveSettings() {
     return { desktopDock: root.desktopDockEnabled, desktopDockMargin: root.settingNumber("desktopDockMargin"),
       desktopDockIconSize: root.settingNumber("desktopDockIconSize"), desktopDockBorder: root.desktopDockBorder,
-      dockBackground: root.dockBackground, dockOpacity: root.dockOpacity }
+      dockBackground: root.dockBackground, dockOpacity: root.dockOpacity,
+      dockSpacing: root.settingNumber("dockSpacing"), dockPadding: root.settingNumber("dockPadding") }
   }
 
   // omarchy-shell shell call turbinebmw.omaview desktopDock on|off|toggle
@@ -1130,6 +1138,10 @@ Item {
       actions.push({ label: "Background: " + root.dockBackground, action: "background" })
       actions.push({ label: "Larger icons", action: "larger" })
       actions.push({ label: "Smaller icons", action: "smaller" })
+      actions.push({ label: "More spacing", action: "moreSpacing" })
+      actions.push({ label: "Less spacing", action: "lessSpacing" })
+      actions.push({ label: "More padding", action: "morePadding" })
+      actions.push({ label: "Less padding", action: "lessPadding" })
     }
     return actions
   }
@@ -1145,11 +1157,16 @@ Item {
       var modes = root.dockBackgroundModes
       root.updateSettings({ dockBackground: modes[(modes.indexOf(root.dockBackground) + 1) % modes.length] })
     }
-    else if (action === "larger" || action === "smaller") {
-      var limit = root.settingLimits.desktopDockIconSize
-      var size = root.settingNumber("desktopDockIconSize") + (action === "larger" ? 4 : -4)
-      root.updateSettings({ desktopDockIconSize: Math.max(limit.min, Math.min(limit.max, size)) })
-    }
+    else if (action === "larger" || action === "smaller") root.stepSetting("desktopDockIconSize", action === "larger" ? 4 : -4)
+    else if (action === "moreSpacing" || action === "lessSpacing") root.stepSetting("dockSpacing", action === "moreSpacing" ? 2 : -2)
+    else if (action === "morePadding" || action === "lessPadding") root.stepSetting("dockPadding", action === "morePadding" ? 2 : -2)
+  }
+
+  function stepSetting(key, delta) {
+    var limit = root.settingLimits[key]
+    var patch = ({})
+    patch[key] = Math.max(limit.min, Math.min(limit.max, root.settingNumber(key) + delta))
+    root.updateSettings(patch)
   }
 
   function closeAppMenu() {
@@ -1553,7 +1570,7 @@ Item {
   // the bottom of every screen, reserving its own height. Opening the
   // overview draws its dock over it and scales up from the same size.
   readonly property real desktopDockScale: root.desktopDockIconSize / Math.max(1, root.dockIcon)
-  readonly property int desktopPopupRoom: root.contextRowHeight * 5 + Style.space(28)
+  readonly property int desktopPopupRoom: root.contextRowHeight * 9 + Style.space(28)
 
   function desktopDockStatus() {
     var result = []
@@ -1631,6 +1648,8 @@ Item {
           pinnedOrder: root.pinned
           maxWidth: (desktopPanel.width - root.edge * 2) / root.desktopDockScale
           iconSize: root.dockIcon
+          spacing: root.dockSpacing
+          padding: root.dockPadding
           iconSource: root.iconSource
           backgroundColor: root.desktopDockBackgroundColor
           backgroundOpacity: root.desktopDockBackgroundAlpha
@@ -2216,6 +2235,8 @@ Item {
         transformOrigin: Item.Bottom
         maxWidth: parent.width - root.edge * 2
         iconSize: root.dockIcon
+        spacing: root.dockSpacing
+        padding: root.dockPadding
         items: root.dockItems
         pinnedOrder: root.pinned
         hintsVisible: root.dockHintsVisible

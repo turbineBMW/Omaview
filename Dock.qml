@@ -14,6 +14,8 @@ Rectangle {
   property var pinnedOrder: []
   property real maxWidth: 1e9
   property int iconSize: Style.space(44)
+  property real spacing: Style.space(6)
+  property real padding: Style.space(10)
   property bool hintsVisible: false
   property var shortcutKeys: []
   property var iconSource: null
@@ -141,8 +143,10 @@ Rectangle {
     Qt.callLater(dock.clearDrag)
   }
 
-  width: Math.min(maxWidth, dockRow.implicitWidth + Style.space(20))
-  height: iconSize + Style.space(22)
+  // The top and bottom get less padding than the sides; the running dots
+  // already sit in the bottom of each icon's cell.
+  width: Math.min(maxWidth, dockRow.implicitWidth + padding * 2)
+  height: iconSize + Style.space(10) + padding * 1.2
   radius: Math.max(Style.cornerRadius, Style.space(12))
   color: Util.alpha(backgroundColor, backgroundOpacity)
   border.width: borderVisible ? 1 : 0
@@ -167,7 +171,7 @@ Rectangle {
   Row {
     id: dockRow
     anchors.centerIn: parent
-    spacing: Style.space(6)
+    spacing: dock.spacing
 
     Repeater {
       id: dockIcons
@@ -178,7 +182,7 @@ Rectangle {
         required property string key
         readonly property var item: dock.itemsByKey[key] || dock.emptyItem
         readonly property string shortcutLetter: dock.letterFor(key)
-        spacing: Style.space(6)
+        spacing: dock.spacing
 
         Rectangle {
           visible: dockSlot.item.sepBefore

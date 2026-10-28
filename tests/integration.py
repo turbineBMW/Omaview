@@ -667,15 +667,26 @@ try:
     assert ipc("setting", "dockOpacity=2") == "1" and ipc("setting", "bogus=1").startswith("unknown")
     wait_for(lambda: observed()["desktopDocks"][0]["exclusiveZone"] > desktop["exclusiveZone"] + 16)
     wait_for(lambda: observed()["desktopDocks"][0]["slots"][0]["w"] > desktop["slots"][0]["w"] * 1.3)
+    # Spacing and padding are shared by both docks and scale with the desktop dock.
+    assert ipc("setting", "dockSpacing") == "6" and ipc("setting", "dockPadding") == "10"
+    sized = observed()["desktopDocks"][0]
+
+    def gap(dock):
+        return dock["slots"][1]["x"] - dock["slots"][0]["x"]
+    assert ipc("setting", "dockSpacing=20") == "20" and ipc("setting", "dockPadding=-5") == "0"
+    wait_for(lambda: gap(observed()["desktopDocks"][0]) > gap(sized) + 8)
+    wait_for(lambda: observed()["desktopDocks"][0]["exclusiveZone"] < sized["exclusiveZone"] - 8)
     saved = json.loads(settings_file.read_text())
     assert saved["desktopDockMargin"] == 30 and saved["desktopDockIconSize"] == 50
     assert saved["desktopDockBorder"] is False and saved["dockBackground"] == "app" and saved["dockOpacity"] == 1
+    assert saved["dockSpacing"] == 20 and saved["dockPadding"] == 0
     assert observed()["settings"] == {"desktopDock": True, "desktopDockMargin": 30, "desktopDockIconSize": 50,
-                                      "desktopDockBorder": False, "dockBackground": "app", "dockOpacity": 1}
+                                      "desktopDockBorder": False, "dockBackground": "app", "dockOpacity": 1,
+                                      "dockSpacing": 20, "dockPadding": 0}
     assert ipc("setting", "dockBackground=bogus") == '"theme"'
     settings_file.write_text(json.dumps({"desktopDock": True}) + "\n")
     wait_for(lambda: observed()["settings"]["desktopDockMargin"] == 14 and observed()["settings"]["desktopDockIconSize"] == 35)
-    print("PASS: dock margin, icon size, border and background settings apply live and persist", flush=True)
+    print("PASS: dock margin, icon size, spacing, padding, border and background settings apply live and persist", flush=True)
     assert ipc("desktopDock", "off") == "off"
     wait_for(lambda: not observed()["desktopDocks"] and dock_layer() is None)
     wait_for(lambda: json.loads(settings_file.read_text()) == {"desktopDock": False})
