@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "turbinebmw.omaview",
   "name": "Omaview",
-  "version": "1.4.3",
+  "version": "1.5.0",
   "author": "turbinebmw",
   "license": "MIT",
-  "description": "Live Hyprland workspace controls with an app grid, Omarchy menus, and a dock.",
+  "description": "Live Hyprland workspace controls with an app grid, Omarchy menus, and a dock for the overview and the desktop.",
   "kinds": [
     "menu",
     "bar-widget"

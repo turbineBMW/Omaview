@@ -61,6 +61,12 @@ They verify the cleared subprocess environment, fixed system tools, symlink
 rejection, artifact-integrity checks, and bounded QML collectors without loading
 a Hyprland plugin.
 
+`scripts/set-icon.py` is the other helper process. It runs with an isolated
+interpreter and an allowlisted environment (`HOME`, `XDG_DATA_HOME`,
+`XDG_DATA_DIRS`), only ever writes under the user's applications directory, and
+edits the `Icon` key of the `[Desktop Entry]` group alone. Its `list` mode runs
+once per shell start to learn which entries carry an Omaview override.
+
 From the repository root, run (opens a separate, temporary Hyprland window):
 
 ```bash
@@ -74,7 +80,10 @@ scrolling and dwindle layouts, actual preview pixels for offscreen windows,
 capture visibility, search after focus changes, geometry updates,
 workspace switching, close/reopen, Ctrl+letter dock focus/launch actions, and
 pointer-driven pin reordering, cancellation, launcher/dock context menus,
-hiding and unhiding apps, search exclusion, and persistence across shell restarts.
+hiding and unhiding apps, search exclusion, the icon picker's clone and reset of
+a system desktop entry, the desktop dock's layer, reserved height, pointer
+activation while the overview is closed and the dock's scale-up on open, and
+persistence across shell restarts.
 Workspace animation checks sample intermediate positions in both directions
 and reverse a transition while Hyprland's active workspace changes immediately.
 Pixel checks verify rounded and square window/wallpaper corners after a config
@@ -111,8 +120,16 @@ Config reloads update the rounding while open, and reopening refreshes it too.
   (`$OMARCHY_PATH/shell/plugins/menu/MenuModel.js`); re-copy it if the menu
   format changes upstream. Its license is preserved in
   [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
-- The manifest sets `keepLoaded` so omaview opens instantly. The kept
-  instance is not replaced on hot reload, so after editing the QML run
-  `omarchy restart shell`.
+- The manifest sets `keepLoaded` so omaview opens instantly and the desktop
+  dock stays up. The kept instance is not replaced on hot reload, so after
+  editing the QML run `omarchy restart shell`.
+- `Dock.qml` draws the dock for both the overview and the desktop; `AppMenu.qml`
+  is the context menu both use. Dock slots are a `ListModel` keyed by item, so
+  windows opening, closing or changing focus update icons in place.
+- The native companion is loaded once per Hyprland session. Reopening skips the
+  loader until Hyprland reports `omaview>>unloaded` or a state query fails, which
+  reruns it once.
+- Running windows for the dock come from `Hyprland.toplevels`, and focus order
+  from `activewindowv2` events, so no process runs while the overview is closed.
 - Window previews use Hyprland's toplevel export via Quickshell's
   `ScreencopyView`, so windows on other workspaces are live too.

@@ -531,7 +531,7 @@ try:
     click(slot, 273)
     wait_for(lambda: observed()["appMenu"]["appId"] == test_app)
     assert pinned_order() == reordered, "Right-click must not immediately change pins"
-    assert [a["label"] for a in observed()["appMenu"]["actions"]] == ["Unpin from dock"]
+    assert [a["label"] for a in observed()["appMenu"]["actions"]] == ["Unpin from dock", "Change icon…"]
     run("wtype", "-k", "Escape")
     assert not observed()["appMenu"]["appId"] and observed()["opened"]
     click(slot, 273)
@@ -543,7 +543,7 @@ try:
     tile = observed()["gridSlots"][0]
     assert tile["appId"] == test_app
     click(tile, 273)
-    assert [a["label"] for a in observed()["appMenu"]["actions"]] == ["Pin to dock", "Hide app"]
+    assert [a["label"] for a in observed()["appMenu"]["actions"]] == ["Pin to dock", "Hide app", "Change icon…"]
     assert test_app not in pinned_order()
     # Clicking outside dismisses without activating the tile or closing the overview.
     click({"x": 1, "y": 1, "w": 1, "h": 1})
@@ -577,6 +577,109 @@ try:
     run("wtype", "-k", "Escape")
     assert observed()["activeMenu"] == "__omaview_hidden"
     print("PASS: launcher/dock context menus, dismissal, explicit pin actions, hiding, search exclusion, and Hidden submenu", flush=True)
+
+    # Change icon: a system entry is cloned into the user's applications
+    # directory with the chosen image, and reset removes the clone again.
+    icon_file = base / "icon.png"
+    icon_file.write_bytes(bytes.fromhex(
+        "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478"
+        "9c63f8cfc0f01f000501020017cb3b1b0000000049454e44ae426082"))
+    local_foot = Path.home() / ".local/share/applications/foot.desktop"
+    system_foot = Path("/usr/share/applications/foot.desktop")
+    assert system_foot.is_file() and not local_foot.exists()
+    run("wtype", "-k", "Escape")  # Back out of the Hidden submenu to the root grid.
+    wait_for(lambda: observed()["activeMenu"] == "root" and observed()["opened"])
+    run("wtype", "foot")
+    wait_for(lambda: any(t["appId"] == "foot" for t in observed()["gridSlots"]))
+    click(next(t for t in observed()["gridSlots"] if t["appId"] == "foot"), 273)
+    wait_for(lambda: observed()["appMenu"]["appId"] == "foot")
+    menu_action("icon")
+    wait_for(lambda: observed()["iconPick"] == "foot" and observed()["filter"] == "")
+    assert observed()["activeMenu"] == "root" and observed()["opened"]
+    assert observed()["rows"] and all(r["kind"] == "icon" for r in observed()["rows"]), "Without a query the picker offers installed app icons"
+    run("wtype", str(icon_file))
+    wait_for(lambda: observed()["rows"] and observed()["rows"][0]["iconValue"] == str(icon_file))
+    run("wtype", "-k", "Return")
+    wait_for(lambda: local_foot.is_file() and "Icon=" + str(icon_file) in local_foot.read_text())
+    cloned = local_foot.read_text()
+    assert "X-Omaview-Icon-Original=" in cloned
+    assert cloned.count("[Desktop Entry]") == 1 and cloned.endswith("\n")
+    wait_for(lambda: observed()["iconPick"] == "" and "foot" in observed()["iconOverrides"])
+    wait_for(lambda: any(r["appId"] == "foot" and r["appIcon"] == str(icon_file) for r in observed()["rows"]))
+    # Applying an icon returns to the root grid with an empty search.
+    assert observed()["opened"] and observed()["activeMenu"] == "root" and observed()["filter"] == ""
+    run("wtype", "foot")
+    wait_for(lambda: any(t["appId"] == "foot" for t in observed()["gridSlots"]))
+    click(next(t for t in observed()["gridSlots"] if t["appId"] == "foot"), 273)
+    wait_for(lambda: observed()["appMenu"]["appId"] == "foot")
+    assert [a["label"] for a in observed()["appMenu"]["actions"]] == ["Pin to dock", "Hide app", "Change icon…", "Reset icon"]
+    menu_action("resetIcon")
+    wait_for(lambda: not local_foot.exists())
+    wait_for(lambda: "foot" not in observed()["iconOverrides"])
+    wait_for(lambda: any(r["appId"] == "foot" and r["appIcon"] != str(icon_file) for r in observed()["rows"]))
+    run("wtype", "-k", "Escape")
+    print("PASS: change icon clones a system entry with the chosen image and reset removes the clone", flush=True)
+
+    # Desktop dock: a Top layer on every screen that reserves its height, with
+    # the overview's dock growing out of it on open.
+    settings_file = pin_file.with_name("omaview.json")
+    assert ipc("desktopDock", "") == "off" and not observed()["desktopDocks"]
+    assert ipc("desktopDock", "on") == "on"
+    wait_for(lambda: json.loads(settings_file.read_text()) == {"desktopDock": True})
+    wait_for(lambda: observed()["desktopDocks"] and all(d["visible"] for d in observed()["desktopDocks"]))
+
+    def dock_layer():
+        for monitor in json.loads(run("hyprctl", "-j", "layers")).values():
+            for layers in monitor["levels"].values():
+                for layer in layers:
+                    if layer["namespace"] == "omarchy-omaview-dock":
+                        return layer
+        return None
+    wait_for(lambda: dock_layer() is not None)
+    layer = dock_layer()
+    desktop = observed()["desktopDocks"][0]
+    assert desktop["exclusiveZone"] > 0 and layer["h"] > desktop["exclusiveZone"]
+    assert [s["key"] for s in desktop["slots"]] == [d["key"] for d in observed()["dock"]]
+    shell("hide", "turbinebmw.omaview")
+    wait_for(lambda: not observed()["opened"])
+    # The desktop dock keeps running windows current while the overview is closed.
+    target = next(d for d in observed()["dock"] if d["windows"] and not any(w["focused"] for w in d["windows"]))
+    address = min(target["windows"], key=lambda w: w["focusOrder"])["address"]
+    slot = next(s for s in observed()["desktopDocks"][0]["slots"] if s["key"] == target["key"])
+    click({"x": layer["x"] + slot["x"], "y": layer["y"] + slot["y"], "w": slot["w"], "h": slot["h"]})
+    wait_for(lambda: compositor()["activewindow"].get("address") == address)
+    assert not observed()["opened"]
+    print("PASS: desktop dock reserves space, mirrors the overview dock, and focuses apps while the overview is closed", flush=True)
+
+    shell("summon", "turbinebmw.omaview", "{}")
+    wait_for(lambda: observed()["panelVisible"])
+    scales = []
+    deadline = time.monotonic() + 1
+    while time.monotonic() < deadline:
+        scales.append(observed()["dockScale"])
+        if scales[-1] == 1 and len(scales) > 1:
+            break
+    assert min(scales) < 1 and scales[-1] == 1 and all(b >= a for a, b in zip(scales, scales[1:])), scales
+    # Margin, icon size, border and colors come from omaview.json and apply live.
+    assert ipc("setting", "desktopDockMargin") == "14" and ipc("setting", "desktopDockIconSize") == "35"
+    assert ipc("setting", "desktopDockMargin=30") == "30" and ipc("setting", "desktopDockIconSize=50") == "50"
+    assert ipc("setting", "desktopDockBorder=off") == "false" and ipc("setting", "dockBackground=app") == '"app"'
+    assert ipc("setting", "dockOpacity=2") == "1" and ipc("setting", "bogus=1").startswith("unknown")
+    wait_for(lambda: observed()["desktopDocks"][0]["exclusiveZone"] > desktop["exclusiveZone"] + 16)
+    wait_for(lambda: observed()["desktopDocks"][0]["slots"][0]["w"] > desktop["slots"][0]["w"] * 1.3)
+    saved = json.loads(settings_file.read_text())
+    assert saved["desktopDockMargin"] == 30 and saved["desktopDockIconSize"] == 50
+    assert saved["desktopDockBorder"] is False and saved["dockBackground"] == "app" and saved["dockOpacity"] == 1
+    assert observed()["settings"] == {"desktopDock": True, "desktopDockMargin": 30, "desktopDockIconSize": 50,
+                                      "desktopDockBorder": False, "dockBackground": "app", "dockOpacity": 1}
+    assert ipc("setting", "dockBackground=bogus") == '"theme"'
+    settings_file.write_text(json.dumps({"desktopDock": True}) + "\n")
+    wait_for(lambda: observed()["settings"]["desktopDockMargin"] == 14 and observed()["settings"]["desktopDockIconSize"] == 35)
+    print("PASS: dock margin, icon size, border and background settings apply live and persist", flush=True)
+    assert ipc("desktopDock", "off") == "off"
+    wait_for(lambda: not observed()["desktopDocks"] and dock_layer() is None)
+    wait_for(lambda: json.loads(settings_file.read_text()) == {"desktopDock": False})
+    print("PASS: the overview dock scales up from the desktop dock on open; the setting toggles off again", flush=True)
 
     # Restart only this test shell to prove the saved order is loaded from disk.
     shell_process.terminate()
