@@ -165,7 +165,7 @@ The choice is saved as `{"desktopDock": true}` in `~/.config/omarchy/omaview.jso
 The same file holds the dock's look. Edits apply live, and each key can also be
 read or set with `omarchy-shell shell call turbinebmw.omaview setting 'key=value'`
 (a bare key reads it). Right-clicking the desktop dock's padding offers the
-border, background and icon size too.
+border, background, icon size, spacing and padding too.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
@@ -174,6 +174,12 @@ border, background and icon size too.
 | `desktopDockBorder` | `true` | Outline around the desktop dock |
 | `dockBackground` | `"theme"` | Color behind both docks: `"theme"` uses the theme's `[omaview]` `dock-background` (below) and falls back to the bar's color, `"bar"` always uses the bar's, `"app"` the theme's base app background |
 | `dockOpacity` | `0.85` | Opacity of that color, 0 to 1 |
+| `dockSpacing` | `6` | Gap between icons, in style units |
+| `dockPadding` | `10` | Space between the icons and the dock's edge, in style units; the top and bottom get 60% of it |
+
+Spacing and padding are set at the overview's size and shared by both docks,
+so the desktop dock shows them scaled by its icon size and the overview's dock
+still grows out of it exactly.
 
 Style units follow the shell's spacing scale, like the rest of Omaview.
 
