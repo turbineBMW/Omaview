@@ -129,11 +129,12 @@ click outside dismisses them.
 
 ### Changing an app's icon
 
-**Change icon…** turns the grid into an icon picker for that app. With no
-search text it shows the icons of your installed apps; type to search the
-installed icon themes by name, or type or paste (**Ctrl+V**, or
-**Shift+Insert**) the path of an image file. Pick a tile to apply it. The
-app's current icon carries a dot.
+**Change icon…** closes the overview and opens your desktop's standard file
+chooser (through xdg-desktop-portal), filtered to image files: PNG, SVG, JPEG,
+WebP, XPM, ICO and BMP. When the app already uses an image file, the chooser
+starts in that file's folder. Choose an image to apply it, or cancel to leave
+the icon as it is. Icon themes live under `/usr/share/icons` and
+`~/.local/share/icons` if you want to reuse one of their images.
 
 The icon is stored as a user-local desktop entry in
 `~/.local/share/applications` (or under `XDG_DATA_HOME`). An app whose entry

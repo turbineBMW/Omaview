@@ -68,6 +68,44 @@ server = subprocess.Popen(["Hyprland", "--config", str(config)],
 processes = []
 env = os.environ.copy()
 
+# Stands in for xdg-desktop-portal's FileChooser on the test's session bus:
+# it logs each OpenFile call and answers with the URI in its third argument.
+# The shell activates the real portal for its settings at startup; that copy
+# would open a GTK dialog outside the test compositor, so it is stopped first.
+FAKE_PORTAL = r'''
+import json, os, signal, sys
+from gi.repository import Gio, GLib
+log, ready, answer = sys.argv[1:]
+NAME = "org.freedesktop.portal.Desktop"
+try:
+    pid = Gio.bus_get_sync(Gio.BusType.SESSION).call_sync("org.freedesktop.DBus", "/org/freedesktop/DBus",
+        "org.freedesktop.DBus", "GetConnectionUnixProcessID", GLib.Variant("(s)", (NAME,)),
+        None, Gio.DBusCallFlags.NONE, -1, None).unpack()[0]
+    os.kill(pid, signal.SIGTERM)
+except GLib.Error:
+    pass  # Not running.
+XML = """<node><interface name="org.freedesktop.portal.FileChooser"><method name="OpenFile">
+<arg type="s" direction="in"/><arg type="s" direction="in"/><arg type="a{sv}" direction="in"/>
+<arg type="o" direction="out"/></method></interface></node>"""
+def call(connection, sender, path, interface, method, parameters, invocation):
+    _parent, title, options = parameters.unpack()
+    request = ("/org/freedesktop/portal/desktop/request/" + sender[1:].replace(".", "_")
+               + "/" + options.get("handle_token", "t"))
+    folder = bytes(options.get("current_folder", b"")).rstrip(b"\0").decode()
+    with open(log, "a") as handle:
+        handle.write(json.dumps({"title": title, "filters": options.get("filters"), "folder": folder}) + "\n")
+    invocation.return_value(GLib.Variant("(o)", (request,)))
+    GLib.idle_add(lambda: connection.emit_signal(sender, request, "org.freedesktop.portal.Request", "Response",
+        GLib.Variant("(ua{sv})", (0, {"uris": GLib.Variant("as", [answer])}))) and False)
+def bus_acquired(connection, _name):
+    connection.register_object("/org/freedesktop/portal/desktop", Gio.DBusNodeInfo.new_for_xml(XML).interfaces[0], call)
+def name_acquired(_connection, _name):
+    open(ready, "w").close()
+# Queue for the name: it passes over once the real portal has exited.
+Gio.bus_own_name(Gio.BusType.SESSION, NAME, Gio.BusNameOwnerFlags.NONE, bus_acquired, name_acquired, None)
+GLib.MainLoop().run()
+'''
+
 
 def run(*args, timeout=15):
     return subprocess.check_output(args, env=env, text=True, timeout=timeout).strip()
@@ -578,9 +616,16 @@ try:
     assert observed()["activeMenu"] == "__omaview_hidden"
     print("PASS: launcher/dock context menus, dismissal, explicit pin actions, hiding, search exclusion, and Hidden submenu", flush=True)
 
-    # Change icon: a system entry is cloned into the user's applications
-    # directory with the chosen image, and reset removes the clone again.
+    # Change icon: the overview closes for the file chooser portal, the system
+    # entry is cloned into the user's applications directory with the chosen
+    # image, and reset removes the clone again.
     icon_file = base / "icon.png"
+    portal_log = base / "portal.log"
+    portal_ready = base / "portal.ready"
+    (base / "fake-portal.py").write_text(FAKE_PORTAL)
+    processes.append(subprocess.Popen(["python3", str(base / "fake-portal.py"), str(portal_log), str(portal_ready),
+                                       icon_file.as_uri()], env=env))
+    wait_for(portal_ready.exists)
     icon_file.write_bytes(bytes.fromhex(
         "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478"
         "9c63f8cfc0f01f000501020017cb3b1b0000000049454e44ae426082"))
@@ -594,20 +639,18 @@ try:
     click(next(t for t in observed()["gridSlots"] if t["appId"] == "foot"), 273)
     wait_for(lambda: observed()["appMenu"]["appId"] == "foot")
     menu_action("icon")
-    wait_for(lambda: observed()["iconPick"] == "foot" and observed()["filter"] == "")
-    assert observed()["activeMenu"] == "root" and observed()["opened"]
-    assert observed()["rows"] and all(r["kind"] == "icon" for r in observed()["rows"]), "Without a query the picker offers installed app icons"
-    run("wtype", str(icon_file))
-    wait_for(lambda: observed()["rows"] and observed()["rows"][0]["iconValue"] == str(icon_file))
-    run("wtype", "-k", "Return")
+    wait_for(lambda: not observed()["opened"])
     wait_for(lambda: local_foot.is_file() and "Icon=" + str(icon_file) in local_foot.read_text())
     cloned = local_foot.read_text()
     assert "X-Omaview-Icon-Original=" in cloned
     assert cloned.count("[Desktop Entry]") == 1 and cloned.endswith("\n")
+    request = json.loads(portal_log.read_text().splitlines()[-1])
+    assert request["title"] == "Icon for Foot" and request["folder"] == ""
+    assert [1, "image/png"] in request["filters"][0][1] and [1, "image/svg+xml"] in request["filters"][0][1]
     wait_for(lambda: observed()["iconPick"] == "" and "foot" in observed()["iconOverrides"])
+    run("wtype", "-M", "logo", "-k", "space", "-m", "logo")
+    wait_for(lambda: observed()["opened"] and observed()["activeMenu"] == "root")
     wait_for(lambda: any(r["appId"] == "foot" and r["appIcon"] == str(icon_file) for r in observed()["rows"]))
-    # Applying an icon returns to the root grid with an empty search.
-    assert observed()["opened"] and observed()["activeMenu"] == "root" and observed()["filter"] == ""
     run("wtype", "foot")
     wait_for(lambda: any(t["appId"] == "foot" for t in observed()["gridSlots"]))
     click(next(t for t in observed()["gridSlots"] if t["appId"] == "foot"), 273)
