@@ -67,6 +67,12 @@ interpreter and an allowlisted environment (`HOME`, `XDG_DATA_HOME`,
 edits the `Icon` key of the `[Desktop Entry]` group alone. Its `list` mode runs
 once per shell start to learn which entries carry an Omaview override.
 
+`scripts/pick-image.py` asks xdg-desktop-portal's FileChooser for an image and
+prints the chosen path; Omaview then hands that path to `set-icon.py`. It runs
+with `-I` but not `-S`, because it needs PyGObject from the system
+site-packages, and its environment is limited to `HOME`, `XDG_RUNTIME_DIR` and
+`DBUS_SESSION_BUS_ADDRESS`.
+
 From the repository root, run (opens a separate, temporary Hyprland window):
 
 ```bash
@@ -80,10 +86,10 @@ scrolling and dwindle layouts, actual preview pixels for offscreen windows,
 capture visibility, search after focus changes, geometry updates,
 workspace switching, close/reopen, Ctrl+letter dock focus/launch actions, and
 pointer-driven pin reordering, cancellation, launcher/dock context menus,
-hiding and unhiding apps, search exclusion, the icon picker's clone and reset of
-a system desktop entry, the desktop dock's layer, reserved height, pointer
-activation while the overview is closed and the dock's scale-up on open, and
-persistence across shell restarts.
+hiding and unhiding apps, search exclusion, changing an icon through a stand-in
+file chooser portal with the clone and reset of a system desktop entry, the
+desktop dock's layer, reserved height, pointer activation while the overview is
+closed and the dock's scale-up on open, and persistence across shell restarts.
 Workspace animation checks sample intermediate positions in both directions
 and reverse a transition while Hyprland's active workspace changes immediately.
 Pixel checks verify rounded and square window/wallpaper corners after a config

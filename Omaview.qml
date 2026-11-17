@@ -62,7 +62,6 @@ Item {
     root.filterText = ""
     root.navStack = []
     root.activeMenu = "root"
-    root.iconPickAppId = ""
     root.setDockHints(false)
     root.clearDockDrag()
     root.closeAppMenu()
@@ -155,7 +154,7 @@ Item {
       dockSlots: overviewDock.slotGeometry(), dockDragging: overviewDock.dragging, dockDropValid: overviewDock.dropValid,
       dockScale: overviewDock.scale, desktopDock: root.desktopDockEnabled, desktopDocks: root.desktopDockStatus(),
       settings: root.effectiveSettings(), theme: root.themeDockStatus(),
-      iconPick: root.iconPickAppId, iconOverrides: root.iconOverrides,
+      iconPick: iconPickProc.running ? iconPickProc.appId : "", iconOverrides: root.iconOverrides,
       workspaceMotion: { running: workspaceAnimation.running, position: root.workspacePosition,
         duration: root.previewDuration, views: root.workspaceStackStatus() }, wallpapers: root.wallpaperStatus() })
   }
@@ -801,9 +800,7 @@ Item {
     var query = root.filterText.trim()
     var i, entry
 
-    if (root.iconPickAppId) {
-      out = root.iconRows(query)
-    } else if (root.activeMenu === root.hiddenMenuId) {
+    if (root.activeMenu === root.hiddenMenuId) {
       for (i = 0; i < root.itemOrder.length; i++) {
         entry = root.item(root.itemOrder[i])
         if (!entry || entry.kind !== "app" || !root.isHidden(entry.appId)) continue
@@ -856,7 +853,7 @@ Item {
     if (next === root.filterText) return
     root.closeAppMenu()
     root.filterText = next
-    if (next.trim() && !root.iconPickAppId) root.loadProvidersForSearch()
+    if (next.trim()) root.loadProvidersForSearch()
     root.rebuildDisplay(true)
   }
 
@@ -875,7 +872,6 @@ Item {
   }
 
   function goBack() {
-    if (root.iconPickAppId) { root.endIconPick(); return true }
     if (root.activeMenu === "root") return false
     var stack = root.navStack.slice()
     var previous = stack.length > 0 ? stack.pop() : "root"
@@ -888,9 +884,7 @@ Item {
     if (index < 0 || index >= root.rows.length) return
     var row = root.rows[index]
 
-    if (row.kind === "icon") {
-      root.applyIcon(root.iconPickAppId, row.iconValue)
-    } else if (row.kind === "app") {
+    if (row.kind === "app") {
       root.close()
       root.launchApp(row.appId, row.label)
     } else if (row.kind === "menu" || row.kind === "link") {
@@ -1207,19 +1201,13 @@ Item {
 
   // ------------------------------------------------------------ icon picker
 
-  // "Change icon…" turns the grid into a picker: theme icon names matching
-  // the search, or an image path typed or pasted in. The choice is written
-  // by scripts/set-icon.py into a user-local desktop entry.
-  property string iconPickAppId: ""
-  property string iconPickName: ""
-  property string iconPickCurrent: ""
-  property var iconNames: []
-  property bool iconNamesLoaded: false
+  // "Change icon…" closes the overview and opens the desktop's file chooser
+  // (xdg-desktop-portal) through scripts/pick-image.py. The chosen image is
+  // written by scripts/set-icon.py into a user-local desktop entry.
   property var iconOverrides: []
 
-  function iconToolEnvironment() {
+  function allowedEnvironment(keys) {
     var allowed = ({})
-    var keys = ["HOME", "XDG_DATA_HOME", "XDG_DATA_DIRS"]
     for (var i = 0; i < keys.length; i++) {
       var value = Quickshell.env(keys[i])
       if (value) allowed[keys[i]] = value
@@ -1227,112 +1215,44 @@ Item {
     return allowed
   }
 
-  readonly property string iconToolPath: decodeURIComponent(Qt.resolvedUrl("scripts/set-icon.py").toString().replace(/^file:\/\//, ""))
+  function scriptPath(name) {
+    return decodeURIComponent(Qt.resolvedUrl("scripts/" + name).toString().replace(/^file:\/\//, ""))
+  }
+
+  readonly property string iconToolPath: root.scriptPath("set-icon.py")
+  readonly property string iconPickerPath: root.scriptPath("pick-image.py")
 
   function beginIconPick(appId) {
-    if (!appId) return
-    if (!root.opened) root.open("{}")
+    if (!appId || iconPickProc.running) return
     root.closeAppMenu()
+    // The overview's layer would cover the dialog.
+    if (root.opened) root.close()
     var entry = DesktopEntries.byId(appId)
-    root.iconPickName = entry ? String(entry.name || appId) : appId
-    root.iconPickCurrent = entry ? String(entry.icon || "") : ""
-    root.iconPickAppId = appId
-    root.filterText = ""
-    root.loadIconNames()
-    root.rebuildDisplay(true)
+    var name = entry ? String(entry.name || appId) : appId
+    var current = entry ? String(entry.icon || "") : ""
+    var folder = current.charAt(0) === "/" ? current.replace(/\/[^\/]*$/, "") : ""
+    iconPickProc.appId = appId
+    iconPickProc.error = ""
+    iconPickProc.command = ["/usr/bin/python3", "-I", root.iconPickerPath, "Icon for " + name].concat(folder ? [folder] : [])
+    iconPickProc.running = true
   }
 
-  function endIconPick() {
-    root.iconPickAppId = ""
-    root.filterText = ""
-    root.rebuildDisplay(true)
-  }
-
-  function iconRow(value, label) {
-    return { itemId: "icon:" + value, kind: "icon", icon: "", iconFont: "", appIcon: value, appId: "",
-             label: label, target: "", detail: "", action: "", iconValue: value }
-  }
-
-  function iconResolves(name) {
-    return root.iconSource(name) !== root.iconSource("")
-  }
-
-  function iconRows(query) {
-    var out = []
-    var seen = ({})
-    var expanded = query.replace(/^~(?=\/)/, Quickshell.env("HOME"))
-    if (expanded.charAt(0) === "/" && /\.(png|svg|svgz|jpe?g|webp|xpm|ico|bmp)$/i.test(expanded)) {
-      seen[expanded] = true
-      out.push(root.iconRow(expanded, expanded.split("/").pop()))
-    }
-    var lower = query.toLowerCase()
-    if (!lower) {
-      // Without a query, offer the icons of installed apps: borrowing one of
-      // those is the common case for a web app or a terminal program.
-      var entries = root.appEntries()
-      for (var e = 0; e < entries.length; e++) {
-        var icon = String(entries[e].icon || "")
-        if (!icon || seen[icon] || icon.charAt(0) === "/") continue
-        seen[icon] = true
-        out.push(root.iconRow(icon, icon))
-      }
-      out.sort(function(a, b) { return a.label.localeCompare(b.label) })
-      return out
-    }
-    var prefix = [], contains = []
-    for (var i = 0; i < root.iconNames.length && prefix.length + contains.length < 400; i++) {
-      var name = root.iconNames[i]
-      var at = name.toLowerCase().indexOf(lower)
-      if (at < 0) continue
-      if (at === 0) prefix.push(name)
-      else contains.push(name)
-    }
-    var ordered = prefix.concat(contains)
-    for (var k = 0; k < ordered.length && out.length < 150; k++) {
-      if (seen[ordered[k]] || !root.iconResolves(ordered[k])) continue
-      seen[ordered[k]] = true
-      out.push(root.iconRow(ordered[k], ordered[k]))
-    }
-    return out
-  }
-
-  function iconDirectories() {
-    var home = Quickshell.env("HOME")
-    var dirs = [(Quickshell.env("XDG_DATA_HOME") || (home + "/.local/share")) + "/icons", home + "/.icons",
-                home + "/.local/share/flatpak/exports/share/icons", "/var/lib/flatpak/exports/share/icons"]
-    var dataDirs = (Quickshell.env("XDG_DATA_DIRS") || "/usr/local/share:/usr/share").split(":")
-    for (var i = 0; i < dataDirs.length; i++) {
-      if (!dataDirs[i]) continue
-      dirs.push(dataDirs[i] + "/icons")
-      dirs.push(dataDirs[i] + "/pixmaps")
-    }
-    return dirs
-  }
-
-  function loadIconNames() {
-    if (root.iconNamesLoaded || iconNamesProc.running) return
-    var dirs = root.iconDirectories().map(Util.shellQuote).join(" ")
-    iconNamesProc.collected = ""
-    iconNamesProc.outputOverflow = false
-    iconNamesProc.command = ["/usr/bin/bash", "-c",
-      "find " + dirs + " -type f \\( -iname '*.svg' -o -iname '*.svgz' -o -iname '*.png' -o -iname '*.xpm' \\) -printf '%f\\n' 2>/dev/null"
-      + " | sed -E 's/\\.(svgz?|png|xpm)$//I' | sort -u"]
-    iconNamesProc.running = true
-  }
-
+  // Not -S: the portal call needs PyGObject from the system site-packages.
   Process {
-    id: iconNamesProc
-    property string collected: ""
-    property bool outputOverflow: false
-    stdout: SplitParser {
-      splitMarker: ""
-      onRead: function(data) { root.appendBoundedOutput(iconNamesProc, data, "icon list") }
-    }
-    onExited: {
-      if (iconNamesProc.outputOverflow) return
-      root.iconNames = iconNamesProc.collected.split("\n").filter(function(name) { return name.length > 0 })
-      root.iconNamesLoaded = true
-      if (root.opened && root.iconPickAppId) root.rebuildDisplay()
+    id: iconPickProc
+    property string appId: ""
+    property string error: ""
+    clearEnvironment: true
+    environment: root.allowedEnvironment(["HOME", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"])
+    stdout: StdioCollector { id: iconPickOutput }
+    stderr: StdioCollector { onStreamFinished: iconPickProc.error = text.trim() }
+    onExited: function(code) {
+      var path = iconPickOutput.text.trim()
+      if (code === 0 && path) root.applyIcon(iconPickProc.appId, path)
+      else if (code !== 1) {
+        console.warn("Omaview icon picker:", iconPickProc.error)
+        Quickshell.execDetached(["/usr/bin/notify-send", "Omaview could not open the file chooser", iconPickProc.error || "The file chooser portal did not answer."])
+      }
     }
   }
 
@@ -1344,7 +1264,6 @@ Item {
       ? ["/usr/bin/python3", "-I", "-S", root.iconToolPath, "set", appId, value]
       : ["/usr/bin/python3", "-I", "-S", root.iconToolPath, "reset", appId]
     iconProc.running = true
-    if (root.iconPickAppId === appId) root.endIconPick()
   }
 
   Process {
@@ -1352,7 +1271,7 @@ Item {
     property string appId: ""
     property string error: ""
     clearEnvironment: true
-    environment: root.iconToolEnvironment()
+    environment: root.allowedEnvironment(["HOME", "XDG_DATA_HOME", "XDG_DATA_DIRS"])
     stderr: StdioCollector { onStreamFinished: iconProc.error = text.trim() }
     onExited: function(code) {
       if (code !== 0) {
@@ -1372,7 +1291,7 @@ Item {
     id: iconListProc
     property bool rerun: false
     clearEnvironment: true
-    environment: root.iconToolEnvironment()
+    environment: root.allowedEnvironment(["HOME", "XDG_DATA_HOME", "XDG_DATA_DIRS"])
     command: ["/usr/bin/python3", "-I", "-S", root.iconToolPath, "list"]
     stdout: StdioCollector {
       onStreamFinished: {
@@ -1837,10 +1756,8 @@ Item {
           event.accepted = true
           return
         }
-        // Shift+Insert pastes anywhere; Ctrl+V does too while picking an
-        // icon, where a pasted image path is the likely intent.
-        if ((event.key === Qt.Key_Insert && (event.modifiers & Qt.ShiftModifier))
-            || (root.iconPickAppId && ctrl && event.key === Qt.Key_V && !(event.modifiers & (Qt.AltModifier | Qt.MetaModifier)))) {
+        // Shift+Insert pastes into the search.
+        if (event.key === Qt.Key_Insert && (event.modifiers & Qt.ShiftModifier)) {
           keyCatcher.pasteFilter()
           event.accepted = true
           return
@@ -2077,7 +1994,7 @@ Item {
 
         Rectangle {
           id: backButton
-          visible: (root.activeMenu !== "root" || root.iconPickAppId !== "") && !root.filterText
+          visible: root.activeMenu !== "root" && !root.filterText
           anchors.left: parent.left
           anchors.verticalCenter: parent.verticalCenter
           width: backLabel.implicitWidth + Style.space(20)
@@ -2088,8 +2005,7 @@ Item {
           Text {
             id: backLabel
             anchors.centerIn: parent
-            text: "‹  " + (root.iconPickAppId ? "Icon for " + root.iconPickName
-              : root.activeMenu === root.hiddenMenuId ? "Hidden" : MenuModel.pathFor(root.items, root.activeMenu))
+            text: "‹  " + (root.activeMenu === root.hiddenMenuId ? "Hidden" : MenuModel.pathFor(root.items, root.activeMenu))
             color: Color.menu.text
             font.family: Style.font.family
             font.pixelSize: Style.font.body
@@ -2119,7 +2035,7 @@ Item {
             verticalAlignment: Text.AlignVCenter
             horizontalAlignment: Text.AlignHCenter
             elide: Text.ElideLeft
-            text: root.filterText ? root.filterText : (root.iconPickAppId ? "Icon name or image path" : "Type to search")
+            text: root.filterText ? root.filterText : "Type to search"
             color: root.filterText ? Color.menu.text : Color.muted
             font.family: Style.font.family
             font.pixelSize: Style.font.body
@@ -2152,7 +2068,6 @@ Item {
           required property int index
           readonly property bool current: GridView.isCurrentItem
           readonly property bool isApp: modelData.kind === "app"
-          readonly property bool isIcon: modelData.kind === "icon"
           readonly property bool isMenu: modelData.kind === "menu" || modelData.kind === "link"
           width: root.cellW
           height: root.cellH
@@ -2174,9 +2089,9 @@ Item {
             y: Style.space(10)
 
             Image {
-              visible: tile.isApp || tile.isIcon
+              visible: tile.isApp
               anchors.fill: parent
-              source: tile.isApp || tile.isIcon ? root.iconSource(tile.modelData.appIcon) : ""
+              source: tile.isApp ? root.iconSource(tile.modelData.appIcon) : ""
               sourceSize.width: root.iconDecodeSize
               sourceSize.height: root.iconDecodeSize
               asynchronous: true
@@ -2185,7 +2100,7 @@ Item {
             // Omarchy menu entries have Nerd Font glyphs rather than icons;
             // give them an app-icon-sized plate so they sit in the same grid.
             Rectangle {
-              visible: !tile.isApp && !tile.isIcon
+              visible: !tile.isApp
               anchors.fill: parent
               radius: width * 0.26
               color: tile.isMenu ? Util.alpha(Color.accent, 0.16) : Style.normalFill
@@ -2201,10 +2116,9 @@ Item {
               }
             }
 
-            // Pinned marker, or the app's current icon while picking one.
+            // Pinned marker.
             Rectangle {
-              visible: (tile.isApp && root.isPinned(tile.modelData.appId))
-                || (tile.isIcon && tile.modelData.iconValue === root.iconPickCurrent)
+              visible: tile.isApp && root.isPinned(tile.modelData.appId)
               width: Style.space(8)
               height: width
               radius: width / 2
@@ -2263,8 +2177,7 @@ Item {
           visible: root.rows.length === 0
           anchors.horizontalCenter: parent.horizontalCenter
           y: Style.space(30)
-          text: root.iconPickAppId ? (root.iconNamesLoaded ? "No matching icons" : "Looking for icons…")
-            : root.filterText ? "No matches" : (root.activeMenu === root.hiddenMenuId ? "No hidden apps" : "Nothing here")
+          text: root.filterText ? "No matches" : (root.activeMenu === root.hiddenMenuId ? "No hidden apps" : "Nothing here")
           color: Color.muted
           font.family: Style.font.family
           font.pixelSize: Style.font.body
