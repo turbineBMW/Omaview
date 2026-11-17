@@ -1385,7 +1385,7 @@ Item {
     }
   }
 
-  Component.onCompleted: root.listIconOverrides()
+  Component.onCompleted: { root.listIconOverrides(); root.syncIconWarmSources() }
 
   // ------------------------------------------------------------------ dock
 
@@ -1516,6 +1516,36 @@ Item {
     var themed = value ? Quickshell.iconPath(value, true) : ""
     return themed.length > 0 ? themed : Quickshell.iconPath("application-x-executable", true)
   }
+
+  // Every app icon is decoded once at this size. Qt's pixmap cache is keyed
+  // by URL and decode size, and it keeps only about 2 MB of images that no
+  // item references, so a grid tile or window badge recreated on open, while
+  // filtering or while scrolling would otherwise decode its icon again,
+  // asynchronously, and appear a frame or more after the tile. The hidden
+  // holders in the overview keep each icon referenced for the shell session,
+  // so every visible Image with the same source and size loads it at once.
+  readonly property int iconDecodeSize: 128
+
+  // Dock icons and window badges resolve to these same app entries; this list
+  // deliberately does not read dockItems, which changes on every focus change.
+  readonly property var iconWarmWanted: {
+    var seen = ({})
+    var out = []
+    for (var i = 0; i < root.itemOrder.length; i++) {
+      var entry = root.item(root.itemOrder[i])
+      if (!entry || entry.kind !== "app") continue
+      var src = String(root.iconSource(entry.appIcon) || "")
+      if (src && !seen[src]) { seen[src] = true; out.push(src) }
+    }
+    return out.sort()
+  }
+  // Reassigning an equal list would recreate every holder, so only real
+  // changes (apps installed or removed, icons changed) reach it.
+  property var iconWarmSources: []
+  function syncIconWarmSources() {
+    if (root.iconWarmWanted.join("\n") !== root.iconWarmSources.join("\n")) root.iconWarmSources = root.iconWarmWanted
+  }
+  onIconWarmWantedChanged: root.syncIconWarmSources()
 
   // Window class -> desktop entry. Chromium web apps report a class like
   // chrome-<host>__<path>-Default that no entry declares, so those are matched
@@ -1718,6 +1748,22 @@ Item {
     WlrLayershell.layer: WlrLayer.Overlay
     WlrLayershell.keyboardFocus: WlrKeyboardFocus.OnDemand
     exclusionMode: ExclusionMode.Ignore
+
+    // Icon holders (see iconDecodeSize). They live in this window so the
+    // decode matches its device pixel ratio, and they load while it is hidden.
+    Item {
+      visible: false
+      Repeater {
+        model: root.iconWarmSources
+        delegate: Image {
+          required property string modelData
+          source: modelData
+          sourceSize.width: root.iconDecodeSize
+          sourceSize.height: root.iconDecodeSize
+          asynchronous: true
+        }
+      }
+    }
 
     readonly property real topH: root.scrollingMode ? Math.round(height * 0.40) : stripFocusedH
     readonly property real mainH: topH - 2 * (root.peek + root.stackGap)
@@ -2131,8 +2177,8 @@ Item {
               visible: tile.isApp || tile.isIcon
               anchors.fill: parent
               source: tile.isApp || tile.isIcon ? root.iconSource(tile.modelData.appIcon) : ""
-              sourceSize.width: 128
-              sourceSize.height: 128
+              sourceSize.width: root.iconDecodeSize
+              sourceSize.height: root.iconDecodeSize
               asynchronous: true
             }
 

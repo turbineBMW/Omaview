@@ -237,8 +237,9 @@ Item {
           anchors.bottom: parent.bottom
           anchors.bottomMargin: Style.space(4)
           source: view.showBadges && view.iconFor ? view.iconFor(win.cls) : ""
-          sourceSize.width: 96
-          sourceSize.height: 96
+          // Same decode size as the dock and grid, so all share one cached image.
+          sourceSize.width: 128
+          sourceSize.height: 128
           asynchronous: true
         }
 
