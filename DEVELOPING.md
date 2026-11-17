@@ -126,6 +126,11 @@ Config reloads update the rounding while open, and reopening refreshes it too.
 - `Dock.qml` draws the dock for both the overview and the desktop; `AppMenu.qml`
   is the context menu both use. Dock slots are a `ListModel` keyed by item, so
   windows opening, closing or changing focus update icons in place.
+- Every app icon is decoded once per shell session at `iconDecodeSize` (128)
+  by hidden holders in the overview window, and the grid, dock and window
+  badges all request that same size. Qt's pixmap cache only keeps about 2 MB
+  of unreferenced images, so without the holders a tile recreated on open,
+  search or scroll decoded its icon again and popped in late.
 - The native companion is loaded once per Hyprland session. Reopening skips the
   loader until Hyprland reports `omaview>>unloaded` or a state query fails, which
   reruns it once.
